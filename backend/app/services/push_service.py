@@ -13,15 +13,21 @@ backend still boots on an image built before this feature.
 import json
 import logging
 from functools import lru_cache
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.operation import Operation
 from app.models.push_subscription import PushSubscription
 from app.schemas.sync import OperationWire
 
 logger = logging.getLogger(__name__)
+
+# lookup(entity, entity_id, field) -> the latest known payload value, or None.
+# Lets messages name things a lone op does not carry (a delete op has an empty
+# payload; the expense's description lives in its earlier create/update ops).
+Lookup = Callable[[str, Optional[str], str], Optional[str]]
 
 
 def push_enabled() -> bool:
@@ -51,32 +57,69 @@ def _amount(payload: dict) -> str:
     return f"{cents / 100:.2f}".replace(".", ",") + " EUR"
 
 
-def build_message(ops: List[OperationWire]) -> Tuple[str, str]:
+def _latest_payload_field(
+    db: Session, group_id: str, entity: str, field: str, entity_id: Optional[str] = None
+) -> Optional[str]:
     """
-    French (title, body) for a batch of ops pushed to one group. Built from op
-    payloads only. Single-op batches get a specific message (the common case
-    with near-instant sync); larger batches collapse into a count.
+    Latest known payload value for a field, in fold order (lamport desc). Not a
+    state merge, just a display lookup: e.g. the group's current name, or the
+    description of an expense whose delete op carries an empty payload.
+    """
+    q = db.query(Operation).filter(
+        Operation.group_id == group_id, Operation.entity == entity
+    )
+    if entity_id is not None:
+        q = q.filter(Operation.entity_id == entity_id)
+    for row in q.order_by(Operation.lamport.desc(), Operation.seq.desc()).all():
+        value = (row.payload or {}).get(field)
+        if value:
+            return str(value)
+    return None
+
+
+def build_body(ops: List[OperationWire], lookup: Lookup) -> str:
+    """
+    French notification body for a batch of ops pushed to one group (the group
+    name goes in the TITLE, resolved by the caller). Single-op batches get a
+    specific message naming the thing that changed, falling back to `lookup`
+    when the op's own payload does not carry it (deletes); larger batches
+    collapse into a count.
     """
     if len(ops) == 1:
         op = ops[0]
         p = op.payload or {}
+
+        def known(field: str) -> str:
+            return str(p.get(field) or lookup(op.entity, op.entity_id, field) or "").strip()
+
         if op.entity == "expense":
-            desc = str(p.get("description") or "").strip() or "Depense"
+            desc = known("description")
             if op.action == "create":
-                return "Nouvelle depense", f"{desc} : {_amount(p)}".rstrip(" :")
+                base = f"Nouvelle depense : {desc}" if desc else "Nouvelle depense"
+                amt = _amount(p)
+                return f"{base} ({amt})" if amt else base
             if op.action == "update":
-                return "Depense modifiee", desc
-            return "Depense supprimee", ""
+                return f"Depense modifiee : {desc}" if desc else "Depense modifiee"
+            return f"Depense supprimee : {desc}" if desc else "Depense supprimee"
         if op.entity == "settlement":
             if op.action == "create":
-                return "Remboursement enregistre", _amount(p)
-            return "Remboursement annule", ""
-        if op.entity == "member" and op.action == "create":
-            return "Nouveau participant", str(p.get("name") or "")
-        if op.entity == "group" and op.action == "update":
-            return "Groupe renomme", str(p.get("name") or "")
+                amt = _amount(p)
+                return f"Remboursement enregistre : {amt}" if amt else "Remboursement enregistre"
+            return "Remboursement annule"
+        if op.entity == "member":
+            name = known("name")
+            if op.action == "create":
+                return f"Nouveau participant : {name}" if name else "Nouveau participant"
+            if op.action == "update":
+                return f"Participant renomme : {name}" if name else "Participant renomme"
+            return f"Participant retire : {name}" if name else "Participant retire"
+        if op.entity == "group":
+            if op.action == "update" and p.get("name"):
+                return f"Groupe renomme : {p['name']}"
+            if op.action == "delete":
+                return "Groupe supprime"
     n = len(ops)
-    return "Ardoise", f"{n} modification{'s' if n > 1 else ''} dans votre groupe"
+    return f"{n} modification{'s' if n > 1 else ''}"
 
 
 def _send(subscription: PushSubscription, payload: str) -> Optional[int]:
@@ -132,7 +175,13 @@ def notify_group(db: Session, group_id: str, actor: str, ops: List[OperationWire
     if not push_enabled() or not ops:
         return 0
 
-    title, body = build_message(ops)
+    # Title = the group's name so people always know WHICH ardoise moved;
+    # body = what happened. Both resolved from the op log alone.
+    def lookup(entity: str, entity_id: Optional[str], field: str) -> Optional[str]:
+        return _latest_payload_field(db, group_id, entity, field, entity_id)
+
+    title = _latest_payload_field(db, group_id, "group", "name") or "Ardoise"
+    body = build_body(ops, lookup)
     payload = json.dumps({"title": title, "body": body, "groupId": group_id})
 
     # Friends-scale table: filter in Python rather than JSON-querying MariaDB.

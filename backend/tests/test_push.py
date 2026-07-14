@@ -54,25 +54,47 @@ def wire(op_id="o1", entity="expense", action="create", payload=None, actor="dev
     )
 
 
-class TestBuildMessage:
+NO_LOOKUP = lambda entity, entity_id, field: None  # noqa: E731
+
+
+class TestBuildBody:
     def test_single_expense_create(self):
-        title, body = push_service.build_message(
-            [wire(payload={"description": "Courses", "amountCents": 2450})]
+        body = push_service.build_body(
+            [wire(payload={"description": "Courses", "amountCents": 2450})], NO_LOOKUP
         )
-        assert title == "Nouvelle depense"
-        assert body == "Courses : 24,50 EUR"
+        assert body == "Nouvelle depense : Courses (24,50 EUR)"
+
+    def test_expense_delete_names_the_expense_via_lookup(self):
+        """A delete op has an empty payload; the description must come from the
+        expense's earlier ops so the user knows WHAT was deleted."""
+        lookup = lambda entity, entity_id, field: (  # noqa: E731
+            "Pizza" if (entity, field) == ("expense", "description") else None
+        )
+        body = push_service.build_body([wire(action="delete", payload={})], lookup)
+        assert body == "Depense supprimee : Pizza"
+
+    def test_expense_delete_degrades_without_history(self):
+        body = push_service.build_body([wire(action="delete", payload={})], NO_LOOKUP)
+        assert body == "Depense supprimee"
 
     def test_single_settlement(self):
-        title, body = push_service.build_message(
-            [wire(entity="settlement", payload={"amountCents": 1000})]
+        body = push_service.build_body(
+            [wire(entity="settlement", payload={"amountCents": 1000})], NO_LOOKUP
         )
-        assert title == "Remboursement enregistre"
-        assert body == "10,00 EUR"
+        assert body == "Remboursement enregistre : 10,00 EUR"
+
+    def test_member_removed_names_the_member(self):
+        lookup = lambda entity, entity_id, field: (  # noqa: E731
+            "Sarah" if (entity, field) == ("member", "name") else None
+        )
+        body = push_service.build_body(
+            [wire(entity="member", action="delete", payload={})], lookup
+        )
+        assert body == "Participant retire : Sarah"
 
     def test_batch_collapses_to_count(self):
-        title, body = push_service.build_message([wire("a"), wire("b"), wire("c")])
-        assert title == "Ardoise"
-        assert body == "3 modifications dans votre groupe"
+        body = push_service.build_body([wire("a"), wire("b"), wire("c")], NO_LOOKUP)
+        assert body == "3 modifications"
 
 
 class TestNotifyFanOut:
@@ -106,7 +128,10 @@ class TestNotifyFanOut:
         assert remaining == {"https://push.example/author", "https://push.example/other-group"}
 
     def test_push_endpoint_schedules_notification(self, client, push_on, monkeypatch):
-        """End to end through the API: a sync push from devA notifies devB."""
+        """End to end through the API: a sync push from devA notifies devB,
+        with the group's NAME as the title (resolved from the op log)."""
+        import json
+
         self._seed_subscriptions(client, push_on)
         sent = []
         monkeypatch.setattr(push_service, "_send", lambda sub, payload: sent.append((sub.endpoint, payload)) or None)
@@ -119,15 +144,35 @@ class TestNotifyFanOut:
         )
 
         client.post("/api/v1/groups/register", json={"groupId": "g1"})
+        # The group's create op carries its name; later ops resolve it for the title.
+        client.post(
+            "/api/v1/groups/g1/ops",
+            json={"ops": [make_op("g-create", "g1", 1, entity="group", entityId="g1",
+                                  payload={"name": "Week-end Bretagne"})]},
+        )
+        sent.clear()
         r = client.post(
             "/api/v1/groups/g1/ops",
-            json={"ops": [make_op("o1", "g1", 1, actor="devA",
+            json={"ops": [make_op("o1", "g1", 2, actor="devA",
                                   payload={"description": "Pizza", "amountCents": 1800})]},
         )
         assert r.status_code == 200
         # TestClient runs background tasks before returning.
         assert [e for e, _ in sent] == ["https://push.example/friend"]
-        assert "Pizza" in sent[0][1]
+        message = json.loads(sent[0][1])
+        assert message["title"] == "Week-end Bretagne"
+        assert message["body"] == "Nouvelle depense : Pizza (18,00 EUR)"
+
+        # Deleting that expense names it too (its delete op has an empty payload).
+        sent.clear()
+        client.post(
+            "/api/v1/groups/g1/ops",
+            json={"ops": [make_op("o2", "g1", 3, actor="devA", action="delete",
+                                  entityId="e1", payload={})]},
+        )
+        message = json.loads(sent[0][1])
+        assert message["title"] == "Week-end Bretagne"
+        assert message["body"] == "Depense supprimee : Pizza"
 
     def test_reseed_sized_batch_stays_silent(self, client, push_on, monkeypatch):
         self._seed_subscriptions(client, push_on)

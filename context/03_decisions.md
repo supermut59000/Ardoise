@@ -256,3 +256,11 @@ User decision: notifications are core to the "feels like a real app" goal, expli
   - [use-push](../frontend-react/src/hooks/use-push.ts) + home menu: "Activer/Desactiver les notifications"; on iOS-in-Safari (no PushManager until installed) the entry becomes "Notifications (installer l'app d'abord)" and opens the install helper. 401 opens the password dialog; 503 explains the server has no key.
 - **Platform truth**: Android/Chromium and desktop full support; iOS 16.4+ only as an installed home-screen app; no support = hidden. The author never gets notified about their own edit.
 - *Status*: active. Verified: 119 FE tests (12 files) incl. base64url decoding, 32 backend tests incl. fan-out/author-exclusion/pruning/silence-above-cap/503-when-disabled, tsc clean, build emits the custom sw.js (injectManifest, 12 precache entries), VAPID generate + derive round-trip proven live in the container. Needs at deploy: image rebuild (pywebpush), `alembic upgrade head`, VAPID key in `.env` (DEPLOY.md section 2). Not click-tested in a browser.
+
+### D31 - 2026-07-14 - Notifications carry the group name and name deleted items
+
+First real-device feedback on D30 (Android): a notification like "Depense supprimee" with no context is useless when you are in several groups. Supersedes D30's message shape:
+- **Title = the group's name** (latest `name` in the group's own create/rename ops, fold order; fallback "Ardoise"). Body = what happened.
+- **Deletes name the thing deleted**: a delete op has an empty payload, so `build_body` takes a `lookup(entity, entity_id, field)` and resolves the description/name from the entity's earlier ops ("Depense supprimee : Pizza", "Participant retire : Sarah"), degrading gracefully when history is absent.
+- Still zero folded state server-side: `_latest_payload_field` is a display lookup over the op log, not a merge. Batches still collapse to "N modifications" under the group-name title.
+- *Status*: active. Verified: 35 backend tests (build_body cases incl. delete-with-lookup and no-history fallback; e2e asserts title "Week-end Bretagne" and body "Depense supprimee : Pizza"). No frontend change (the SW displays title/body as sent).
