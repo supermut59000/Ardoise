@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { DateField } from '@/components/ui/date-field'
 import { useGroupData } from '@/hooks/use-group-data'
 import { addExpense, deleteExpense, updateExpense } from '@/sync/ops'
 import { computeOwed, validateSplit } from '@/domain/split'
@@ -249,7 +250,7 @@ export function ExpenseForm() {
 
         <div className="space-y-1.5">
           <label htmlFor="date" className="text-sm font-medium">Date</label>
-          <Input id="date" type="date" value={spentAt} onChange={(e) => setSpentAt(e.target.value)} />
+          <DateField id="date" value={spentAt} onChange={setSpentAt} />
         </div>
 
         {/* Split editor */}

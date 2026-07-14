@@ -409,9 +409,14 @@ export function GroupDetail() {
         </section>
       )}
 
-      {/* Add-expense FAB */}
+      {/* Add-expense FAB. Fixed elements ignore the body's safe-area padding,
+          so it needs its own inset or the home-indicator zone swallows it. */}
       {members.length > 0 && (
-        <Link to={`/g/${groupId}/add`} className="fixed inset-x-0 bottom-6 mx-auto flex max-w-md justify-end px-4">
+        <Link
+          to={`/g/${groupId}/add`}
+          className="fixed inset-x-0 mx-auto flex max-w-md justify-end px-4"
+          style={{ bottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}
+        >
           <Button
             size="lg"
             className="size-14 rounded-full shadow-lg shadow-primary/30 transition-transform active:scale-90"

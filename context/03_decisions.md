@@ -199,3 +199,10 @@ Eight look-and-feel changes from a design review, no behaviour change:
 - **Day grouping**: expense list gets section headers via new pure `dayLabel(iso, today)` in [lib/format.ts](../frontend-react/src/lib/format.ts) ("Aujourd'hui", "Hier", "1 juillet", year appended cross-year; unit-tested incl. year boundary). The per-row date was removed as redundant.
 - **Motion**: tab panels animate in (tw-animate-css fade+slide, 300ms); balance bars animate width. Global prefers-reduced-motion kill-switch already covers these.
 - *Status*: active. Verified: tsc clean, 108 FE tests, build emits SW (font precached, 12 entries). Not click-tested in a browser.
+
+### D27 - 2026-07-14 - Device-feedback fixes: FAB safe-area, French date field
+
+From real-device screenshots:
+- **FAB clipped**: fixed elements ignore the body's safe-area padding, so the add-expense button sat half under the home-indicator zone. Its bottom offset is now `calc(1.5rem + env(safe-area-inset-bottom))`.
+- **Date input showed US format**: a native `<input type=date>` renders in the browser locale ("03/25/2026" on an English phone), ignoring the page's `lang="fr"`. New [DateField](../frontend-react/src/components/ui/date-field.tsx): the real input sits invisible on top (native picker, focus and keyboard all keep working) over a styled layer that renders `dayLabel(value)`, so it reads "Aujourd'hui" / "Hier" / "25 mars" everywhere.
+- *Status*: active. Verified: tsc clean, 108 FE tests, build emits SW. Not click-tested in a browser.
