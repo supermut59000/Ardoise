@@ -51,18 +51,24 @@ Both paths are idempotent (`op_id` dedup) and covered by engine tests (wipe and 
 - Call `navigator.storage.persist()` on first launch so iOS does not evict IndexedDB after 7 idle days.
 - Everything works with zero connectivity; sync is pure catch-up.
 
-## Push notifications (D30)
+## Push notifications (D30, message shape D31)
 
 The relay is also the natural fan-out point: when a device pushes new ops, the
 server notifies every subscribed device following that group, except the
-author's own (`device_id == actor`). Messages are built from op payloads only
-(the server still never folds state). Batches above 50 accepted ops stay
-silent (that is a self-heal reseed or an import, not live activity). The custom
+author's own (`device_id == actor`). Batches above 50 accepted ops stay silent
+(that is a self-heal reseed or an import, not live activity). The custom
 service worker ([src/sw.ts](../frontend-react/src/sw.ts), injectManifest) shows
 the notification and opens the group on tap. Subscriptions are device-scoped
 (like identity, D23) and carry the device's shared-group list, re-sent on app
 start and after share/join/leave. Requires `VAPID_PRIVATE_KEY` server-side;
 without it push is cleanly off and the menu entry hides.
+
+Message shape (D31): **title = the group's name**, body = what happened,
+including on deletion ("Depense supprimee : Pizza", "Participant retire :
+Sarah"). A delete op has an empty payload, so `build_body` resolves names via
+`_latest_payload_field`, a display-only lookup over the entity's earlier ops
+in fold order; the server still never folds state. Multi-op batches collapse
+to "N modifications" under the group-name title.
 
 ## Known iOS PWA constraints (designed around, not fought)
 
