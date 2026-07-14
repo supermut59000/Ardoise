@@ -206,3 +206,8 @@ From real-device screenshots:
 - **FAB clipped**: fixed elements ignore the body's safe-area padding, so the add-expense button sat half under the home-indicator zone. Its bottom offset is now `calc(1.5rem + env(safe-area-inset-bottom))`.
 - **Date input showed US format**: a native `<input type=date>` renders in the browser locale ("03/25/2026" on an English phone), ignoring the page's `lang="fr"`. New [DateField](../frontend-react/src/components/ui/date-field.tsx): the real input sits invisible on top (native picker, focus and keyboard all keep working) over a styled layer that renders `dayLabel(value)`, so it reads "Aujourd'hui" / "Hier" / "25 mars" everywhere.
 - *Status*: active. Verified: tsc clean, 108 FE tests, build emits SW. Not click-tested in a browser.
+
+### D28 - 2026-07-14 - dayLabel always carries the year; FAB stacked above rows
+
+Refinement of D26/D27 after user feedback: `dayLabel` full dates now always include the year ("25 mars 2026", not only cross-year), and the add-expense FAB gets `z-40` so it always paints above the expense rows (SwipeableCard transforms create their own stacking contexts).
+- *Status*: active. Verified: tsc clean, 107 FE tests (two dayLabel cases merged into one), build emits SW.

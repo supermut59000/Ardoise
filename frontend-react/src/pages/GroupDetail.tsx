@@ -414,7 +414,7 @@ export function GroupDetail() {
       {members.length > 0 && (
         <Link
           to={`/g/${groupId}/add`}
-          className="fixed inset-x-0 mx-auto flex max-w-md justify-end px-4"
+          className="fixed inset-x-0 z-40 mx-auto flex max-w-md justify-end px-4"
           style={{ bottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}
         >
           <Button

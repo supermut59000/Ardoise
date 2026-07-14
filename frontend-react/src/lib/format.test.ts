@@ -49,11 +49,8 @@ describe('dayLabel', () => {
     expect(dayLabel('2026-07-13', today)).toBe('Hier')
   })
 
-  it('labels older same-year dates as day + month', () => {
-    expect(dayLabel('2026-07-01', today)).toBe('1 juillet')
-  })
-
-  it('adds the year for other years', () => {
+  it('always includes the year on full dates', () => {
+    expect(dayLabel('2026-07-01', today)).toBe('1 juillet 2026')
     expect(dayLabel('2025-12-31', today)).toBe('31 décembre 2025')
   })
 

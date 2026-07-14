@@ -26,8 +26,8 @@ export function todayIso(): string {
 }
 
 /**
- * Human day header for list sections: "Aujourd'hui", "Hier", otherwise
- * "13 juillet" (with the year when it is not the current one).
+ * Human day header for list sections: "Aujourd'hui", "Hier", otherwise the
+ * full date with the year ("25 mars 2026").
  */
 export function dayLabel(iso: string, today: string = todayIso()): string {
   if (iso === today) return "Aujourd'hui"
@@ -35,7 +35,5 @@ export function dayLabel(iso: string, today: string = todayIso()): string {
   const t = new Date(today + 'T00:00:00')
   if (Number.isNaN(d.getTime()) || Number.isNaN(t.getTime())) return iso
   if (Math.round((t.getTime() - d.getTime()) / 86_400_000) === 1) return 'Hier'
-  const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long' }
-  if (d.getFullYear() !== t.getFullYear()) opts.year = 'numeric'
-  return new Intl.DateTimeFormat('fr-FR', opts).format(d)
+  return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }).format(d)
 }
