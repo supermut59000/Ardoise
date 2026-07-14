@@ -30,7 +30,7 @@ Member (participant, need NOT be an app user; just a name, like Tricount)
 
 Expense
   id (uuid), group_id, description, amount_cents, currency,
-  paid_by (member_id), spent_at (date), category, created_at, deleted
+  paid_by (member_id), spent_at (date), emoji, split_mode, created_at, deleted
 
 ExpenseShare (how one expense is split)
   expense_id, member_id, weight  (equal split = weight 1 each;

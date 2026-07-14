@@ -1,6 +1,6 @@
 # 04 - Roadmap and build status
 
-Each phase is independently usable. Current status: **Phase 4 complete** (2026-07-14). Next: targeted hardening driven by real use with friends (user will direct).
+Each phase is independently usable. Current status: **Phase 4 complete + UX/visual passes D22-D28, deployed on the homelab** (2026-07-14). Next: feedback from real use with friends (user will direct).
 
 ## Phase 0 - Scaffold (done 2026-07-13)
 
@@ -57,7 +57,7 @@ Delivered (2026-07-14):
 
 ## UX pass for non-technical users (done 2026-07-14)
 
-See decisions D22, D23 and D24. Highlights: member avatars (colour + initials), haptic feedback, near-instant sync (~1s debounce after an edit), pending-changes indicator, per-group identity with a personal balance headline, undo after expense delete, group rename/delete and participant rename UI, expense emojis (fuzzy French picker + live auto-suggestion from the description).
+See decisions D22 through D28. Highlights: member avatars (colour + initials), haptic feedback, near-instant sync (~1s debounce after an edit), pending-changes indicator, per-group identity with a personal balance headline and "Ma part" on the total card, undo after expense delete, group rename/delete and participant rename UI, expense emojis (fuzzy French picker + live auto-suggestion), visual pass (Lexend Variable, center-axis balance bars, layered light mode, hero total card, day headers with year, brand theme-color, tab animations), safe-area-aware FAB, always-French DateField over the native picker.
 
 ## What makes this simpler than Tricount
 
