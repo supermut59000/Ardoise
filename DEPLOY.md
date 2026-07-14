@@ -112,6 +112,60 @@ and persistent storage, and Caddy provides it.
 - App updates: after a redeploy, open apps show a "Nouvelle version disponible" toast
   and reload on tap (never mid-edit); freshly opened apps get the new version directly.
 
+## Hardening for internet exposure (defense in depth)
+
+The API key is the trust boundary and, generated with `openssl rand -base64 32`
+over HTTPS with a constant-time compare, it is not brute-forceable in practice.
+The realistic threats are elsewhere: software vulnerabilities in the exposed
+stack (Caddy, nginx, FastAPI) and noise/abuse against the open endpoints. The
+layers below are ordered by value; the first three cost minutes.
+
+**1. Caddy headers + body cap** (in the Ardoise site block):
+
+```caddy
+ardoise.example.com {
+    reverse_proxy localhost:3060
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        -Server
+    }
+    request_body {
+        max_size 12MB
+    }
+}
+```
+
+**2. Keep the software current.** The most likely real-world compromise is a
+known CVE in an outdated image or proxy. Monthly: `git pull`,
+`docker compose build --pull`, `docker compose up -d`, and keep Caddy updated
+in its LXC. This matters more than any header.
+
+**3. Rate limiting / ban on 401 spam.** Stock Caddy has no rate limiter, so
+either build it with the `mholt/caddy-ratelimit` plugin (xcaddy), or better on
+a homelab: run CrowdSec (or fail2ban) reading Caddy's access log and ban IPs
+that stack up 401/404s. This turns key-guessing noise into silence.
+
+**4. Only expose what friends need.** Caddy should be the single WAN entry.
+The compose file already keeps backend and MariaDB off the network; the
+frontend's LAN port 3060 must never be port-forwarded (Docker bypasses UFW).
+`DEBUG=false` keeps /docs and the OpenAPI schema dead in production.
+
+**5. Stronger than a shared key, if ever wanted** (each trades friend-UX):
+- Cloudflare Tunnel + Access, or a VPN (Tailscale/WireGuard): the app stops
+  being reachable at all without enrollment. Strongest, but every friend must
+  install something, which defeats the share-a-link flow.
+- Caddy `forward_auth` to Authelia/Authentik (real SSO accounts): overkill for
+  a friends instance, noted for completeness.
+- Rotating `API_KEY` now and then is cheap: change `.env`, restart backend,
+  everyone re-enters once (menu -> Mot de passe du serveur).
+
+What an attacker WITHOUT the key can reach today: the static PWA files,
+`/health` (a boolean), `/system/ping`, and 401s on everything else. Sync,
+push subscriptions and share codes are all behind the key.
+
 ## Accepted risks (small trusted-friends deployment)
 
 These are deliberate for a "me + friends behind one shared password" instance:

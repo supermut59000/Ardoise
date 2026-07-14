@@ -264,3 +264,12 @@ First real-device feedback on D30 (Android): a notification like "Depense suppri
 - **Deletes name the thing deleted**: a delete op has an empty payload, so `build_body` takes a `lookup(entity, entity_id, field)` and resolves the description/name from the entity's earlier ops ("Depense supprimee : Pizza", "Participant retire : Sarah"), degrading gracefully when history is absent.
 - Still zero folded state server-side: `_latest_payload_field` is a display lookup over the op log, not a merge. Batches still collapse to "N modifications" under the group-name title.
 - *Status*: active. Verified: 35 backend tests (build_body cases incl. delete-with-lookup and no-history fallback; e2e asserts title "Week-end Bretagne" and body "Depense supprimee : Pizza"). No frontend change (the SW displays title/body as sent).
+
+### D32 - 2026-07-14 - Capacity numbers measured; stay on MariaDB (tuned), hardening guide
+
+User asked three ops questions: Postgres for a slimmer footprint, where the capacity numbers live, and how to harden internet exposure.
+
+- **New context file [05_capacity-and-limits.md](05_capacity-and-limits.md)**: measured storage (~1.5 KB/op on disk, ~920 B on the wire), sync timings (13 ms idle poll, 1.8 s fresh join of 10 000 ops), client fold timings (10 000 ops folded in ~13 ms desktop), RAM footprints, hard limits table, append-only consequences. Method documented; bench data was throwaway and deleted.
+- **Database: stay on MariaDB.** Measured idle RSS: defaults 201 MB, tuned (`--innodb-buffer-pool-size=64M --performance-schema=OFF --max-connections=40`) 78 MB, which is Postgres-class. A Postgres migration would buy ~nothing, cost a migration, and break the VroomVroom stack symmetry (D2). Slimming = add the command flags to the mariadb service in docker-compose (left for the user to apply).
+- **Hardening**: new "Hardening for internet exposure" section in DEPLOY.md, ordered by value: Caddy security headers + 12 MB body cap, keeping images/proxy current (the realistic threat is a stale CVE, not the key), CrowdSec/fail2ban on 401 spam (stock Caddy has no rate limiter), single WAN entry via Caddy only, and the stronger-than-shared-key options (Cloudflare Access / VPN / SSO) with their friend-UX costs. Restated the boundary: without the key an attacker reaches only static files, /health, /system/ping and 401s.
+- *Status*: active. Docs only, no code change.

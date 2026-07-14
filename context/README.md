@@ -14,6 +14,7 @@ Goal: split shared group expenses, simpler than Tricount, **you own the data** (
 | [02_sync-and-offline.md](02_sync-and-offline.md) | The operation-log sync engine, offline/PWA constraints | **Always** |
 | [03_decisions.md](03_decisions.md) | Decision ledger (what was decided, when, and why) | **Always** |
 | [04_roadmap.md](04_roadmap.md) | Phased roadmap and current build status | On demand |
+| [05_capacity-and-limits.md](05_capacity-and-limits.md) | Measured storage/timing/RAM numbers and hard limits | On demand |
 
 ## Current state (2026-07-14)
 
