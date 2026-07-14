@@ -37,6 +37,7 @@ export interface Expense {
   amountCents: number
   paidBy: string // member id
   spentAt: string // ISO date (YYYY-MM-DD)
+  emoji?: string // category marker chosen/suggested in the UI ('' or absent = none)
   splitMode?: SplitMode // absent on Phase 1 expenses -> treated as 'equal'
   shares: ExpenseShare[]
   createdAt: number

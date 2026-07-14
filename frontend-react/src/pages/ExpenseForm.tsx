@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Trash2 } from 'lucide-react'
+import { ArrowLeft, Trash2, SmilePlus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,8 @@ import { addExpense, deleteExpense, updateExpense } from '@/sync/ops'
 import { computeOwed, validateSplit } from '@/domain/split'
 import type { ExpenseShare, SplitMode } from '@/domain/types'
 import { MemberAvatar } from '@/components/ui/member-avatar'
+import { EmojiPickerDialog } from '@/components/expense/EmojiPickerDialog'
+import { suggestEmoji } from '@/lib/emoji'
 import { formatCents, parseAmountToCents, todayIso } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
 import { useMe } from '@/lib/me'
@@ -31,6 +33,10 @@ export function ExpenseForm() {
   const me = useMe(groupId)
 
   const [description, setDescription] = useState('')
+  const [emoji, setEmoji] = useState('')
+  // Once the user picks (or clears) an emoji themselves, stop auto-suggesting.
+  const [emojiTouched, setEmojiTouched] = useState(false)
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false)
   const [amount, setAmount] = useState('')
   const [paidBy, setPaidBy] = useState('')
   const [spentAt, setSpentAt] = useState(todayIso())
@@ -60,6 +66,8 @@ export function ExpenseForm() {
   if (!initialized && members.length > 0) {
     if (existing) {
       setDescription(existing.description)
+      setEmoji(existing.emoji ?? '')
+      setEmojiTouched(true)
       setAmount(centsToInput(existing.amountCents))
       setPaidBy(existing.paidBy)
       setSpentAt(existing.spentAt)
@@ -142,6 +150,7 @@ export function ExpenseForm() {
       amountCents,
       paidBy,
       spentAt,
+      emoji,
       splitMode,
       shares,
     }
@@ -171,6 +180,7 @@ export function ExpenseForm() {
               amountCents: snapshot.amountCents,
               paidBy: snapshot.paidBy,
               spentAt: snapshot.spentAt,
+              emoji: snapshot.emoji,
               splitMode: snapshot.splitMode,
               shares: snapshot.shares,
             })
@@ -199,7 +209,27 @@ export function ExpenseForm() {
       <form onSubmit={handleSubmit} className="space-y-5">
         <div className="space-y-1.5">
           <label htmlFor="desc" className="text-sm font-medium">Description</label>
-          <Input id="desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Courses, restaurant..." />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setEmojiPickerOpen(true)}
+              aria-label={emoji ? `Emoji : ${emoji}. Changer` : 'Choisir un emoji'}
+              title="Choisir un emoji"
+              className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md border text-xl transition-colors hover:bg-accent"
+            >
+              {emoji || <SmilePlus className="size-5 text-muted-foreground" />}
+            </button>
+            <Input
+              id="desc"
+              value={description}
+              onChange={(e) => {
+                setDescription(e.target.value)
+                // Live suggestion: "Courses" -> caddie, "essence" -> pompe...
+                if (!emojiTouched) setEmoji(suggestEmoji(e.target.value) ?? '')
+              }}
+              placeholder="Courses, restaurant..."
+            />
+          </div>
         </div>
 
         <div className="space-y-1.5">
@@ -307,6 +337,16 @@ export function ExpenseForm() {
           </Button>
         )}
       </form>
+
+      <EmojiPickerDialog
+        value={emoji}
+        open={emojiPickerOpen}
+        onOpenChange={setEmojiPickerOpen}
+        onSelect={(picked) => {
+          setEmoji(picked)
+          setEmojiTouched(true)
+        }}
+      />
     </main>
   )
 }

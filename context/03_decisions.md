@@ -170,3 +170,12 @@ Continuation of the "smoother than Tricount" direction, focused on removing dead
 - **Participant rename** in ParticipantsDialog (pencil -> inline input): fixes the permanent-typo trap, since a member referenced by expenses cannot be removed and re-added. The add-participant input no longer autofocuses (the dialog is now also for renaming and identity, so popping the mobile keyboard on open was wrong).
 - **Checklist polish**: cursor-pointer + transition-colors on the split-mode picker, dialog icon buttons, and the share-code copy button.
 - *Status*: active. Verified: tsc clean, 85 FE tests pass, build emits SW. Not click-tested in a browser.
+
+### D24 - 2026-07-14 - Expense emojis with fuzzy picker and auto-suggestion ("more lively")
+
+User feedback: friends found the app visually dead. Expenses now carry an optional emoji.
+- **Data**: `emoji?: string` on Expense ('' or absent = none). It is an ordinary payload field, so fold LWW, sync and the relay need zero changes; old expenses render as before. The form always writes the field (even empty) so clearing an emoji syncs.
+- **Catalogue + search** ([lib/emoji.ts](../frontend-react/src/lib/emoji.ts)): ~130 curated expense emojis with unaccented French keywords (brands included: mcdo, carrefour, uber, sncf, blablacar...). `searchEmojis` ranks exact > prefix > substring, accent-insensitive. `suggestEmoji` proposes one from the description live (whole-word or word-prefix, words >= 3 letters so noise never triggers).
+- **UI**: emoji button next to the description field opens [EmojiPickerDialog](../frontend-react/src/components/expense/EmojiPickerDialog.tsx) (search input + grid + "Retirer l'emoji"). Typing a description auto-fills the emoji until the user picks one manually (then suggestions stop for that expense). Expense rows show the emoji in a rounded tile with the payer's avatar as a corner badge; rows without emoji keep the plain avatar.
+- **Note**: the "no emoji as UI icons" rule still holds; these emojis are user content (a category marker on a depense), not interface iconography.
+- *Status*: active. Verified: tsc clean, 98 FE tests (13 new for normalize/search/suggest), build emits SW. Not click-tested in a browser.

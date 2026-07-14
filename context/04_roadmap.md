@@ -57,7 +57,7 @@ Delivered (2026-07-14):
 
 ## UX pass for non-technical users (done 2026-07-14)
 
-See decisions D22 and D23. Highlights: member avatars (colour + initials), haptic feedback, near-instant sync (~1s debounce after an edit), pending-changes indicator, per-group identity with a personal balance headline, undo after expense delete, group rename/delete and participant rename UI.
+See decisions D22, D23 and D24. Highlights: member avatars (colour + initials), haptic feedback, near-instant sync (~1s debounce after an edit), pending-changes indicator, per-group identity with a personal balance headline, undo after expense delete, group rename/delete and participant rename UI, expense emojis (fuzzy French picker + live auto-suggestion from the description).
 
 ## What makes this simpler than Tricount
 

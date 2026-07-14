@@ -104,6 +104,7 @@ export interface ExpenseInput {
   amountCents: number
   paidBy: string
   spentAt: string // ISO date
+  emoji?: string // '' = none; the form always carries it so clearing syncs (LWW per field)
   splitMode?: SplitMode // defaults to 'equal'
   shares: ExpenseShare[]
 }
@@ -125,6 +126,7 @@ export async function addExpense(
       amountCents: input.amountCents,
       paidBy: input.paidBy,
       spentAt: input.spentAt,
+      emoji: input.emoji ?? '',
       splitMode: input.splitMode ?? 'equal',
       shares: input.shares,
       createdAt: Date.now(),

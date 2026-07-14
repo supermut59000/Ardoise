@@ -76,6 +76,7 @@ export function GroupDetail() {
               amountCents: expense.amountCents,
               paidBy: expense.paidBy,
               spentAt: expense.spentAt,
+              emoji: expense.emoji,
               splitMode: expense.splitMode,
               shares: expense.shares,
             })
@@ -252,7 +253,22 @@ export function GroupDetail() {
                     onClick={() => navigate(`/g/${groupId}/e/${e.id}`)}
                     className="flex w-full cursor-pointer items-center gap-3 p-3 text-left"
                   >
-                    <MemberAvatar name={nameOf(e.paidBy)} seed={e.paidBy} size="md" />
+                    {/* Emoji tile with the payer's avatar as a corner badge; plain avatar otherwise */}
+                    {e.emoji ? (
+                      <span className="relative shrink-0">
+                        <span className="flex size-10 items-center justify-center rounded-full bg-accent text-xl">
+                          {e.emoji}
+                        </span>
+                        <MemberAvatar
+                          name={nameOf(e.paidBy)}
+                          seed={e.paidBy}
+                          size="xs"
+                          className="absolute -bottom-1 -right-1"
+                        />
+                      </span>
+                    ) : (
+                      <MemberAvatar name={nameOf(e.paidBy)} seed={e.paidBy} size="md" />
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-medium">{e.description || 'Depense'}</p>
                       <p className="truncate text-xs text-muted-foreground">
