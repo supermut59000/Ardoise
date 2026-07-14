@@ -39,3 +39,26 @@ export function computeBalances(
 
   return [...net.entries()].map(([memberId, netCents]) => ({ memberId, netCents }))
 }
+
+/**
+ * Member ids that still appear in a non-deleted expense (as payer or participant)
+ * or settlement. Removing one of these would orphan the references and leave a
+ * nameless ghost in the balances, so the UI blocks it.
+ */
+export function referencedMemberIds(
+  expenses: Expense[],
+  settlements: Settlement[] = [],
+): Set<string> {
+  const ids = new Set<string>()
+  for (const e of expenses) {
+    if (e.deleted) continue
+    ids.add(e.paidBy)
+    for (const s of e.shares) ids.add(s.memberId)
+  }
+  for (const s of settlements) {
+    if (s.deleted) continue
+    ids.add(s.fromMemberId)
+    ids.add(s.toMemberId)
+  }
+  return ids
+}

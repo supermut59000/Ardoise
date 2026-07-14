@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Receipt, ArrowRight, Check, Menu, Users, Sun, Moon,
-  Pencil, Share2, FileJson, FileSpreadsheet, Undo2,
+  Pencil, Share2, FileJson, FileSpreadsheet, Undo2, Trash2,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
@@ -15,11 +15,16 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ParticipantsDialog } from '@/components/group/ParticipantsDialog'
 import { ShareDialog } from '@/components/group/ShareDialog'
+import { RenameGroupDialog } from '@/components/group/RenameGroupDialog'
+import { DeleteGroupDialog } from '@/components/group/DeleteGroupDialog'
+import { MemberAvatar } from '@/components/ui/member-avatar'
 import { useGroupData } from '@/hooks/use-group-data'
-import { addSettlement, deleteExpense, deleteSettlement } from '@/sync/ops'
+import { addExpense, addSettlement, deleteExpense, deleteSettlement } from '@/sync/ops'
 import { exportGroupCsv, exportGroupJson } from '@/lib/export'
 import { formatCents, formatDate, todayIso } from '@/lib/format'
-import type { Transfer } from '@/domain/types'
+import { tapFeedback } from '@/lib/haptics'
+import { useMe } from '@/lib/me'
+import type { Expense, Transfer } from '@/domain/types'
 
 type Tab = 'expenses' | 'balances'
 
@@ -27,10 +32,13 @@ export function GroupDetail() {
   const { groupId = '' } = useParams()
   const navigate = useNavigate()
   const data = useGroupData(groupId)
+  const me = useMe(groupId)
   const { resolvedTheme, setTheme } = useTheme()
   const [tab, setTab] = useState<Tab>('expenses')
   const [participantsOpen, setParticipantsOpen] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   if (data === undefined) {
     return <p className="mx-auto max-w-md p-6 text-sm text-muted-foreground">Chargement...</p>
@@ -44,14 +52,36 @@ export function GroupDetail() {
     )
   }
 
-  const { group, members, expenses, settlements, balances, transfers } = data
+  const { group, members, expenses, settlements, balances, transfers, referenced } = data
   const currency = group.currency
-  const nameOf = (id: string) => members.find((m) => m.id === id)?.name ?? '?'
+  const totalCents = expenses.reduce((sum, e) => sum + e.amountCents, 0)
+  // Falls back gracefully if an id was removed on another device (no ugly "?").
+  const nameOf = (id: string) => members.find((m) => m.id === id)?.name ?? 'Ancien participant'
+  // In the Soldes tab, mark the local user so they spot their own lines at a glance.
+  const label = (id: string) => (id === me ? `${nameOf(id)} (moi)` : nameOf(id))
+  const myBalance = me ? balances.find((b) => b.memberId === me) : undefined
 
-  async function handleDelete(expenseId: string) {
+  // Undo re-creates the expense (same content, new id): a delete op is
+  // terminal in the fold, so the original id cannot be resurrected.
+  async function handleDelete(expense: Expense) {
     try {
-      await deleteExpense(groupId, expenseId)
-      toast.success('Depense supprimee')
+      await deleteExpense(groupId, expense.id)
+      tapFeedback()
+      toast.success('Depense supprimee', {
+        action: {
+          label: 'Annuler',
+          onClick: () => {
+            void addExpense(groupId, {
+              description: expense.description,
+              amountCents: expense.amountCents,
+              paidBy: expense.paidBy,
+              spentAt: expense.spentAt,
+              splitMode: expense.splitMode,
+              shares: expense.shares,
+            })
+          },
+        },
+      })
     } catch {
       toast.error('Suppression impossible')
     }
@@ -65,6 +95,7 @@ export function GroupDetail() {
         amountCents: t.amountCents,
         settledAt: todayIso(),
       })
+      tapFeedback()
       toast.success('Remboursement enregistre')
     } catch {
       toast.error('Enregistrement impossible')
@@ -127,37 +158,70 @@ export function GroupDetail() {
               <FileJson /> Exporter en JSON
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem disabled>
-              <Pencil /> Renommer le groupe (bientot)
+            <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
+              <Pencil /> Renommer le groupe
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => setDeleteOpen(true)}
+              className="text-destructive focus:text-destructive [&_svg]:text-destructive"
+            >
+              <Trash2 /> Supprimer le groupe
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </header>
 
-      {/* Participant summary (management is in the burger menu) */}
+      {/* Total spent */}
+      {expenses.length > 0 && (
+        <Card className="mb-4 flex items-baseline justify-between bg-primary p-4 text-primary-foreground">
+          <span className="text-sm opacity-80">Total des depenses</span>
+          <span className="text-2xl font-semibold tabular-nums">
+            {formatCents(totalCents, currency)}
+          </span>
+        </Card>
+      )}
+
+      {/* Participant summary with avatars (management is in the burger menu) */}
       <button
         onClick={() => setParticipantsOpen(true)}
-        className="mb-4 flex w-full items-center gap-2 text-left text-sm text-muted-foreground"
+        className="mb-4 flex w-full items-center gap-2 text-left"
+        aria-label="Gerer les participants"
       >
-        <Users className="size-4 shrink-0" />
-        <span className="truncate">
-          {members.length === 0
-            ? 'Aucun participant. Touchez pour en ajouter.'
-            : members.map((m) => m.name).join(', ')}
-        </span>
+        {members.length === 0 ? (
+          <span className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Users className="size-4 shrink-0" /> Aucun participant. Touchez pour en ajouter.
+          </span>
+        ) : (
+          <>
+            <div className="flex -space-x-2">
+              {members.slice(0, 5).map((m) => (
+                <MemberAvatar key={m.id} name={m.name} seed={m.id} size="xs" />
+              ))}
+            </div>
+            <span className="truncate text-sm text-muted-foreground">
+              {members.length} participant{members.length > 1 ? 's' : ''}
+            </span>
+          </>
+        )}
       </button>
 
       {/* Tabs */}
-      <div className="mb-4 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+      <div role="tablist" aria-label="Vue du groupe" className="mb-4 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
         <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'expenses'}
           onClick={() => setTab('expenses')}
-          className={`rounded-md py-1.5 text-sm font-medium ${tab === 'expenses' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+          className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'expenses' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
         >
           Depenses
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'balances'}
           onClick={() => setTab('balances')}
-          className={`rounded-md py-1.5 text-sm font-medium ${tab === 'balances' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+          className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'balances' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
         >
           Soldes
         </button>
@@ -166,43 +230,74 @@ export function GroupDetail() {
       {tab === 'expenses' ? (
         <section className="space-y-2">
           {expenses.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Aucune depense. Touchez + pour en ajouter une.</p>
+            <div className="mt-10 flex flex-col items-center gap-3 text-center">
+              <div className="flex size-14 items-center justify-center rounded-2xl bg-accent text-accent-foreground">
+                <Receipt className="size-6" />
+              </div>
+              <p className="text-sm text-muted-foreground text-balance">
+                {members.length === 0
+                  ? "Ajoutez d'abord des participants, puis touchez + pour votre premiere depense."
+                  : 'Aucune depense. Touchez + pour ajouter la premiere.'}
+              </p>
+            </div>
           ) : (
-            expenses.map((e) => (
-              <SwipeableCard
-                key={e.id}
-                onSwipeRight={() => navigate(`/g/${groupId}/e/${e.id}`)}
-                onSwipeLeft={() => handleDelete(e.id)}
-              >
-                <button
-                  onClick={() => navigate(`/g/${groupId}/e/${e.id}`)}
-                  className="flex w-full items-center gap-3 p-3 text-left"
+            <>
+              {expenses.map((e) => (
+                <SwipeableCard
+                  key={e.id}
+                  onSwipeRight={() => navigate(`/g/${groupId}/e/${e.id}`)}
+                  onSwipeLeft={() => handleDelete(e)}
                 >
-                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-secondary">
-                    <Receipt className="size-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">{e.description || 'Depense'}</p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {nameOf(e.paidBy)} a paye &middot; {formatDate(e.spentAt)}
-                    </p>
-                  </div>
-                  <span className="shrink-0 font-semibold tabular-nums">{formatCents(e.amountCents, currency)}</span>
-                </button>
-              </SwipeableCard>
-            ))
+                  <button
+                    onClick={() => navigate(`/g/${groupId}/e/${e.id}`)}
+                    className="flex w-full cursor-pointer items-center gap-3 p-3 text-left"
+                  >
+                    <MemberAvatar name={nameOf(e.paidBy)} seed={e.paidBy} size="md" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{e.description || 'Depense'}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {nameOf(e.paidBy)} a paye &middot; {formatDate(e.spentAt)}
+                      </p>
+                    </div>
+                    <span className="shrink-0 font-semibold tabular-nums">{formatCents(e.amountCents, currency)}</span>
+                  </button>
+                </SwipeableCard>
+              ))}
+              <p className="pt-1 text-center text-xs text-muted-foreground sm:hidden">
+                Glissez une depense pour la modifier ou la supprimer.
+              </p>
+            </>
           )}
-          <p className="pt-1 text-center text-xs text-muted-foreground sm:hidden">
-            Glissez une depense pour la modifier ou la supprimer.
-          </p>
         </section>
       ) : (
         <section className="space-y-4">
+          {/* Personal headline: the one number the local user actually cares about */}
+          {myBalance && (
+            <Card
+              className={`p-4 text-sm font-medium ${
+                myBalance.netCents > 0
+                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                  : myBalance.netCents < 0
+                    ? 'bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                    : 'text-muted-foreground'
+              }`}
+            >
+              {myBalance.netCents > 0 && (
+                <>On vous doit <span className="text-lg font-semibold tabular-nums">{formatCents(myBalance.netCents, currency)}</span></>
+              )}
+              {myBalance.netCents < 0 && (
+                <>Vous devez <span className="text-lg font-semibold tabular-nums">{formatCents(-myBalance.netCents, currency)}</span></>
+              )}
+              {myBalance.netCents === 0 && <>Vous etes a jour, vous ne devez rien.</>}
+            </Card>
+          )}
+
           <div className="space-y-1">
             {balances.map((b) => (
-              <div key={b.memberId} className="flex items-center justify-between px-1 text-sm">
-                <span>{nameOf(b.memberId)}</span>
-                <span className={`font-semibold tabular-nums ${b.netCents > 0 ? 'text-emerald-600 dark:text-emerald-400' : b.netCents < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}`}>
+              <div key={b.memberId} className="flex items-center gap-2 px-1 py-1 text-sm">
+                <MemberAvatar name={nameOf(b.memberId)} seed={b.memberId} size="sm" />
+                <span className="min-w-0 flex-1 truncate">{label(b.memberId)}</span>
+                <span className={`shrink-0 font-semibold tabular-nums ${b.netCents > 0 ? 'text-emerald-600 dark:text-emerald-400' : b.netCents < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}`}>
                   {b.netCents > 0 ? '+' : ''}{formatCents(b.netCents, currency)}
                 </span>
               </div>
@@ -212,19 +307,21 @@ export function GroupDetail() {
           <div>
             <h2 className="mb-2 text-sm font-medium text-muted-foreground">Remboursements suggeres</h2>
             {transfers.length === 0 ? (
-              <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Check className="size-4" /> Tout est equilibre.
-              </p>
+              <Card className="flex items-center gap-2 p-4 text-sm text-emerald-600 dark:text-emerald-400">
+                <Check className="size-5" /> Tout est equilibre, personne ne doit rien.
+              </Card>
             ) : (
               <ul className="space-y-2">
                 {transfers.map((t, i) => (
                   <li key={i}>
                     <Card className="flex items-center gap-2 p-3 text-sm">
-                      <span className="font-medium">{nameOf(t.fromMemberId)}</span>
-                      <ArrowRight className="size-4 text-muted-foreground" />
-                      <span className="font-medium">{nameOf(t.toMemberId)}</span>
-                      <span className="ml-auto tabular-nums font-semibold">{formatCents(t.amountCents, currency)}</span>
-                      <Button size="sm" variant="outline" className="ml-1 h-8" onClick={() => handleSettle(t)}>
+                      <MemberAvatar name={nameOf(t.fromMemberId)} seed={t.fromMemberId} size="xs" />
+                      <span className="truncate font-medium">{label(t.fromMemberId)}</span>
+                      <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+                      <MemberAvatar name={nameOf(t.toMemberId)} seed={t.toMemberId} size="xs" />
+                      <span className="truncate font-medium">{label(t.toMemberId)}</span>
+                      <span className="ml-auto shrink-0 tabular-nums font-semibold">{formatCents(t.amountCents, currency)}</span>
+                      <Button size="sm" variant="outline" className="ml-1 h-8 shrink-0" onClick={() => handleSettle(t)}>
                         Regler
                       </Button>
                     </Card>
@@ -242,12 +339,17 @@ export function GroupDetail() {
                 {settlements.map((s) => (
                   <li key={s.id}>
                     <Card className="flex items-center gap-2 p-3 text-sm">
-                      <Check className="size-4 text-emerald-500" />
-                      <span className="font-medium">{nameOf(s.fromMemberId)}</span>
-                      <ArrowRight className="size-4 text-muted-foreground" />
-                      <span className="font-medium">{nameOf(s.toMemberId)}</span>
-                      <span className="ml-auto tabular-nums font-semibold">{formatCents(s.amountCents, currency)}</span>
-                      <button onClick={() => handleUnsettle(s.id)} aria-label="Annuler" className="ml-1 text-muted-foreground">
+                      <Check className="size-4 shrink-0 text-emerald-500" />
+                      <span className="truncate font-medium">{label(s.fromMemberId)}</span>
+                      <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate font-medium">{label(s.toMemberId)}</span>
+                      <span className="ml-auto shrink-0 tabular-nums font-semibold">{formatCents(s.amountCents, currency)}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleUnsettle(s.id)}
+                        aria-label="Annuler le remboursement"
+                        className="-m-1 ml-0 shrink-0 cursor-pointer p-2 text-muted-foreground hover:text-foreground"
+                      >
                         <Undo2 className="size-4" />
                       </button>
                     </Card>
@@ -262,7 +364,11 @@ export function GroupDetail() {
       {/* Add-expense FAB */}
       {members.length > 0 && (
         <Link to={`/g/${groupId}/add`} className="fixed inset-x-0 bottom-6 mx-auto flex max-w-md justify-end px-4">
-          <Button size="lg" className="size-14 rounded-full shadow-lg" aria-label="Ajouter une depense">
+          <Button
+            size="lg"
+            className="size-14 rounded-full shadow-lg shadow-primary/30 transition-transform active:scale-90"
+            aria-label="Ajouter une depense"
+          >
             <Plus className="size-6" />
           </Button>
         </Link>
@@ -271,10 +377,13 @@ export function GroupDetail() {
       <ParticipantsDialog
         groupId={groupId}
         members={members}
+        referenced={referenced}
         open={participantsOpen}
         onOpenChange={setParticipantsOpen}
       />
       <ShareDialog groupId={groupId} open={shareOpen} onOpenChange={setShareOpen} />
+      <RenameGroupDialog groupId={groupId} currentName={group.name} open={renameOpen} onOpenChange={setRenameOpen} />
+      <DeleteGroupDialog groupId={groupId} groupName={group.name} open={deleteOpen} onOpenChange={setDeleteOpen} />
     </main>
   )
 }

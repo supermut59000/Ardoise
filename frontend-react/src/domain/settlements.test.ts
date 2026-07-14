@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { computeBalances } from './balances'
+import { computeBalances, referencedMemberIds } from './balances'
 import { simplifyDebts } from './simplify-debts'
 import type { Expense, Member, Settlement } from './types'
 
 let c = 0
 const member = (id: string): Member => ({ id, groupId: 'g', name: id, createdAt: c++ })
-const expense = (paidBy: string, amountCents: number, ids: string[]): Expense => ({
+const expense = (paidBy: string, amountCents: number, ids: string[], over: Partial<Expense> = {}): Expense => ({
   id: `e${c++}`,
   groupId: 'g',
   description: 'x',
@@ -15,6 +15,7 @@ const expense = (paidBy: string, amountCents: number, ids: string[]): Expense =>
   splitMode: 'equal',
   shares: ids.map((memberId) => ({ memberId, weight: 1 })),
   createdAt: c++,
+  ...over,
 })
 const settlement = (from: string, to: string, amountCents: number, over: Partial<Settlement> = {}): Settlement => ({
   id: `s${c++}`,
@@ -67,5 +68,33 @@ describe('settlements in balances', () => {
     const expenses = [expense('a', 100, ['a', 'b'])]
     const after = computeBalances(members, expenses, [settlement('b', 'a', 50, { deleted: true })])
     expect(net(after, 'b')).toBe(-50) // unchanged
+  })
+})
+
+describe('referencedMemberIds (guard for member removal)', () => {
+  it('flags the payer and every participant of a live expense', () => {
+    const ids = referencedMemberIds([expense('a', 90, ['b', 'c'])])
+    expect(ids.has('a')).toBe(true) // payer
+    expect(ids.has('b')).toBe(true)
+    expect(ids.has('c')).toBe(true)
+  })
+
+  it('flags both parties of a settlement', () => {
+    const ids = referencedMemberIds([], [settlement('x', 'y', 100)])
+    expect(ids.has('x')).toBe(true)
+    expect(ids.has('y')).toBe(true)
+  })
+
+  it('ignores deleted expenses and settlements', () => {
+    const ids = referencedMemberIds(
+      [expense('a', 100, ['a', 'b'], { deleted: true })],
+      [settlement('c', 'd', 50, { deleted: true })],
+    )
+    expect(ids.size).toBe(0)
+  })
+
+  it('a member in no expense is removable (not referenced)', () => {
+    const ids = referencedMemberIds([expense('a', 100, ['a', 'b'])])
+    expect(ids.has('lonely')).toBe(false)
   })
 })

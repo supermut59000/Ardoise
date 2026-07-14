@@ -73,7 +73,7 @@ export function ShareDialog({ groupId, open, onOpenChange }: Props) {
           <div className="space-y-3">
             <button
               onClick={() => copy(code, 'code')}
-              className="flex w-full items-center justify-between rounded-lg border bg-muted px-4 py-3"
+              className="flex w-full cursor-pointer items-center justify-between rounded-lg border bg-muted px-4 py-3 transition-colors hover:bg-muted/70"
             >
               <span className="font-mono text-2xl tracking-widest">{code}</span>
               {copied === 'code' ? <Check className="size-5 text-emerald-500" /> : <Copy className="size-5 text-muted-foreground" />}

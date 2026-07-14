@@ -3,7 +3,7 @@ import { ArdoiseDB } from '@/db/dexie'
 import { foldOps } from './fold'
 import { addExpense, addMember, addSettlement, createGroup } from './ops'
 import { activeSettlements } from './fold'
-import { joinGroup, shareGroup, syncAllGroups, syncGroup } from './engine'
+import { countUnsyncedShared, joinGroup, shareGroup, syncAllGroups, syncGroup } from './engine'
 import type { WireOp } from './client'
 
 /**
@@ -17,7 +17,7 @@ function installMockServer() {
   const codes = new Map<string, string>() // shareCode -> groupId
   const ops: (WireOp & { seq: number })[] = []
   let seq = 0
-  const server = { offline: false, ops, requests: 0 }
+  const server = { offline: false, authFail: false, ops, requests: 0 }
 
   function json(data: unknown, status = 200) {
     return { ok: status < 400, status, json: async () => data } as Response
@@ -26,6 +26,7 @@ function installMockServer() {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     server.requests++
     if (server.offline) throw new TypeError('Failed to fetch')
+    if (server.authFail) return json({ detail: 'unauthorized' }, 401)
 
     const url = new URL(String(input), 'http://test')
     const path = url.pathname
@@ -203,8 +204,8 @@ describe('offline resilience', () => {
       { description: 'Cafe', amountCents: 300, paidBy: members[0].id, spentAt: '2026-07-15', shares: [{ memberId: members[0].id, weight: 1 }] },
       db1,
     )
-    // syncAllGroups must not throw while offline.
-    await expect(syncAllGroups(db1)).resolves.toBeUndefined()
+    // syncAllGroups must not throw while offline; it reports the network failure.
+    await expect(syncAllGroups(db1)).resolves.toEqual({ authError: false, networkError: true })
     expect((await db1.operations.toArray()).filter((o) => o.synced === 0)).toHaveLength(1)
 
     // Reconnect: the queued op gets pushed.
@@ -219,6 +220,47 @@ describe('offline resilience', () => {
     await seedGroup(db1) // never shared
     await syncAllGroups(db1)
     expect(server.ops).toHaveLength(0)
+  })
+})
+
+describe('sync status reporting', () => {
+  it('reports authError when the server rejects the password, without throwing', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    await shareGroup(g, db1)
+
+    server.authFail = true
+    // add an offline-from-the-server-view change, then sync
+    const members = Object.values(foldOps(await db1.operations.toArray()).members)
+    await addExpense(
+      g,
+      { description: 'Bar', amountCents: 900, paidBy: members[0].id, spentAt: '2026-07-14', shares: [{ memberId: members[0].id, weight: 1 }] },
+      db1,
+    )
+    const summary = await syncAllGroups(db1)
+    expect(summary.authError).toBe(true)
+    expect(summary.networkError).toBe(false)
+  })
+
+  it('countUnsyncedShared reflects pending pushes and clears after sync', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    // Before sharing, nothing is "shared" so nothing counts as pending-to-server.
+    expect(await countUnsyncedShared(db1)).toBe(0)
+
+    await shareGroup(g, db1) // registers + pushes all seed ops
+    expect(await countUnsyncedShared(db1)).toBe(0)
+
+    // A new local change is pending until synced.
+    const members = Object.values(foldOps(await db1.operations.toArray()).members)
+    await addExpense(
+      g,
+      { description: 'Taxi', amountCents: 1500, paidBy: members[0].id, spentAt: '2026-07-14', shares: [{ memberId: members[0].id, weight: 1 }] },
+      db1,
+    )
+    expect(await countUnsyncedShared(db1)).toBe(1)
+    await syncGroup(g, db1)
+    expect(await countUnsyncedShared(db1)).toBe(0)
   })
 })
 

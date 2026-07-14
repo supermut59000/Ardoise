@@ -1,6 +1,7 @@
 import { bumpLamport, db, type ArdoiseDB } from '@/db/dexie'
 import type { ExpenseShare, SplitMode } from '@/domain/types'
 import { newId, type Action, type Entity, type Operation } from './operation'
+import { emitLocalChange } from './events'
 
 /**
  * Append one operation atomically: bump the lamport clock and write the op in a
@@ -36,6 +37,15 @@ async function appendOp(
   })
 }
 
+async function appendAndNotify(
+  database: ArdoiseDB,
+  args: Parameters<typeof appendOp>[1],
+): Promise<Operation> {
+  const op = await appendOp(database, args)
+  emitLocalChange() // nudge the sync engine to push this promptly
+  return op
+}
+
 // ---- Group ----
 
 export async function createGroup(
@@ -43,7 +53,7 @@ export async function createGroup(
   database: ArdoiseDB = db,
 ): Promise<string> {
   const groupId = newId()
-  await appendOp(database, {
+  await appendAndNotify(database, {
     groupId,
     entity: 'group',
     entityId: groupId,
@@ -54,11 +64,11 @@ export async function createGroup(
 }
 
 export async function renameGroup(groupId: string, name: string, database: ArdoiseDB = db) {
-  await appendOp(database, { groupId, entity: 'group', entityId: groupId, action: 'update', payload: { name } })
+  await appendAndNotify(database, { groupId, entity: 'group', entityId: groupId, action: 'update', payload: { name } })
 }
 
 export async function deleteGroup(groupId: string, database: ArdoiseDB = db) {
-  await appendOp(database, { groupId, entity: 'group', entityId: groupId, action: 'delete', payload: {} })
+  await appendAndNotify(database, { groupId, entity: 'group', entityId: groupId, action: 'delete', payload: {} })
 }
 
 // ---- Member ----
@@ -69,7 +79,7 @@ export async function addMember(
   database: ArdoiseDB = db,
 ): Promise<string> {
   const memberId = newId()
-  await appendOp(database, {
+  await appendAndNotify(database, {
     groupId,
     entity: 'member',
     entityId: memberId,
@@ -80,11 +90,11 @@ export async function addMember(
 }
 
 export async function renameMember(groupId: string, memberId: string, name: string, database: ArdoiseDB = db) {
-  await appendOp(database, { groupId, entity: 'member', entityId: memberId, action: 'update', payload: { name } })
+  await appendAndNotify(database, { groupId, entity: 'member', entityId: memberId, action: 'update', payload: { name } })
 }
 
 export async function removeMember(groupId: string, memberId: string, database: ArdoiseDB = db) {
-  await appendOp(database, { groupId, entity: 'member', entityId: memberId, action: 'delete', payload: {} })
+  await appendAndNotify(database, { groupId, entity: 'member', entityId: memberId, action: 'delete', payload: {} })
 }
 
 // ---- Expense ----
@@ -104,7 +114,7 @@ export async function addExpense(
   database: ArdoiseDB = db,
 ): Promise<string> {
   const expenseId = newId()
-  await appendOp(database, {
+  await appendAndNotify(database, {
     groupId,
     entity: 'expense',
     entityId: expenseId,
@@ -129,11 +139,11 @@ export async function updateExpense(
   patch: Partial<ExpenseInput>,
   database: ArdoiseDB = db,
 ) {
-  await appendOp(database, { groupId, entity: 'expense', entityId: expenseId, action: 'update', payload: { ...patch } })
+  await appendAndNotify(database, { groupId, entity: 'expense', entityId: expenseId, action: 'update', payload: { ...patch } })
 }
 
 export async function deleteExpense(groupId: string, expenseId: string, database: ArdoiseDB = db) {
-  await appendOp(database, { groupId, entity: 'expense', entityId: expenseId, action: 'delete', payload: {} })
+  await appendAndNotify(database, { groupId, entity: 'expense', entityId: expenseId, action: 'delete', payload: {} })
 }
 
 // ---- Settlement (recorded repayment) ----
@@ -151,7 +161,7 @@ export async function addSettlement(
   database: ArdoiseDB = db,
 ): Promise<string> {
   const settlementId = newId()
-  await appendOp(database, {
+  await appendAndNotify(database, {
     groupId,
     entity: 'settlement',
     entityId: settlementId,
@@ -169,5 +179,5 @@ export async function addSettlement(
 }
 
 export async function deleteSettlement(groupId: string, settlementId: string, database: ArdoiseDB = db) {
-  await appendOp(database, { groupId, entity: 'settlement', entityId: settlementId, action: 'delete', payload: {} })
+  await appendAndNotify(database, { groupId, entity: 'settlement', entityId: settlementId, action: 'delete', payload: {} })
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Wallet, ChevronRight, Menu, Sun, Moon, Download, LogIn, DownloadCloud, KeyRound } from 'lucide-react'
+import { Plus, Wallet, ChevronRight, Menu, Sun, Moon, Download, LogIn, DownloadCloud, KeyRound, Users } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { InstallHelpDialog } from '@/components/layout/InstallHelpDialog'
+import { MemberAvatar } from '@/components/ui/member-avatar'
 import { useGroups } from '@/hooks/use-groups'
 import { useInstallPrompt } from '@/hooks/use-install-prompt'
 import { createGroup } from '@/sync/ops'
@@ -18,6 +19,8 @@ import { joinGroup } from '@/sync/engine'
 import { SyncError } from '@/sync/client'
 import { promptForApiKey } from '@/lib/auth'
 import { exportAllJson } from '@/lib/export'
+import { formatCents } from '@/lib/format'
+import { tapFeedback } from '@/lib/haptics'
 
 export function Groups() {
   const groups = useGroups()
@@ -79,6 +82,7 @@ export function Groups() {
     try {
       await createGroup({ name: trimmed })
       setName('')
+      tapFeedback()
     } catch {
       toast.error('Impossible de creer le groupe')
     } finally {
@@ -132,19 +136,46 @@ export function Groups() {
       </form>
 
       {groups === undefined ? (
-        <p className="text-muted-foreground text-sm">Chargement...</p>
+        <ul className="space-y-2" aria-hidden="true">
+          {[0, 1].map((i) => (
+            <li key={i} className="h-[4.75rem] animate-pulse rounded-xl bg-muted" />
+          ))}
+        </ul>
       ) : groups.length === 0 ? (
-        <p className="text-muted-foreground text-sm">
-          Aucun groupe pour l'instant. Creez-en un ou rejoignez-en un avec un code.
-        </p>
+        <div className="mt-10 flex flex-col items-center gap-3 text-center">
+          <div className="flex size-14 items-center justify-center rounded-2xl bg-accent text-accent-foreground">
+            <Users className="size-6" />
+          </div>
+          <p className="text-sm text-muted-foreground text-balance">
+            Aucun groupe pour l'instant. Creez-en un ci-dessus, ou rejoignez celui d'un ami avec son code.
+          </p>
+        </div>
       ) : (
         <ul className="space-y-2">
-          {groups.map((g) => (
-            <li key={g.id}>
-              <Link to={`/g/${g.id}`}>
-                <Card className="flex items-center justify-between p-4 transition-colors active:bg-accent">
-                  <span className="font-medium">{g.name}</span>
-                  <ChevronRight className="size-5 text-muted-foreground" />
+          {groups.map(({ group, members, totalCents, expenseCount }) => (
+            <li key={group.id}>
+              <Link to={`/g/${group.id}`} className="block">
+                <Card className="flex cursor-pointer items-center gap-3 p-4 transition-colors active:bg-accent">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">{group.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {members.length} participant{members.length > 1 ? 's' : ''}
+                      {expenseCount > 0 && ` · ${formatCents(totalCents, group.currency)}`}
+                    </p>
+                  </div>
+                  {members.length > 0 && (
+                    <div className="flex -space-x-2">
+                      {members.slice(0, 3).map((m) => (
+                        <MemberAvatar key={m.id} name={m.name} seed={m.id} size="xs" />
+                      ))}
+                      {members.length > 3 && (
+                        <span className="inline-flex size-6 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground ring-2 ring-background">
+                          +{members.length - 3}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <ChevronRight className="size-5 shrink-0 text-muted-foreground" />
                 </Card>
               </Link>
             </li>

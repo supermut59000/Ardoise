@@ -8,7 +8,10 @@ import { useGroupData } from '@/hooks/use-group-data'
 import { addExpense, deleteExpense, updateExpense } from '@/sync/ops'
 import { computeOwed, validateSplit } from '@/domain/split'
 import type { ExpenseShare, SplitMode } from '@/domain/types'
+import { MemberAvatar } from '@/components/ui/member-avatar'
 import { formatCents, parseAmountToCents, todayIso } from '@/lib/format'
+import { tapFeedback } from '@/lib/haptics'
+import { useMe } from '@/lib/me'
 
 const MODES: { value: SplitMode; label: string }[] = [
   { value: 'equal', label: 'Egal' },
@@ -25,6 +28,7 @@ export function ExpenseForm() {
   const isEdit = Boolean(expenseId)
   const navigate = useNavigate()
   const data = useGroupData(groupId)
+  const me = useMe(groupId)
 
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
@@ -68,7 +72,8 @@ export function ExpenseForm() {
       }
       setRaw(r)
     } else {
-      setPaidBy(members[0].id)
+      // Default the payer to the local user when they told us who they are.
+      setPaidBy(me && members.some((m) => m.id === me) ? me : members[0].id)
       setIncluded(new Set(members.map((m) => m.id)))
     }
     setInitialized(true)
@@ -143,6 +148,7 @@ export function ExpenseForm() {
     try {
       if (isEdit && expenseId) await updateExpense(groupId, expenseId, payload)
       else await addExpense(groupId, payload)
+      tapFeedback()
       navigate(`/g/${groupId}`)
     } catch {
       toast.error('Enregistrement impossible')
@@ -151,10 +157,26 @@ export function ExpenseForm() {
   }
 
   async function handleDelete() {
-    if (!expenseId) return
+    if (!expenseId || !existing) return
+    const snapshot = existing
     try {
       await deleteExpense(groupId, expenseId)
-      toast.success('Depense supprimee')
+      // Undo re-creates the expense (new id): a delete op is terminal in the fold.
+      toast.success('Depense supprimee', {
+        action: {
+          label: 'Annuler',
+          onClick: () => {
+            void addExpense(groupId, {
+              description: snapshot.description,
+              amountCents: snapshot.amountCents,
+              paidBy: snapshot.paidBy,
+              spentAt: snapshot.spentAt,
+              splitMode: snapshot.splitMode,
+              shares: snapshot.shares,
+            })
+          },
+        },
+      })
       navigate(`/g/${groupId}`)
     } catch {
       toast.error('Suppression impossible')
@@ -213,7 +235,7 @@ export function ExpenseForm() {
                 type="button"
                 key={m.value}
                 onClick={() => changeMode(m.value)}
-                className={`rounded-md py-1.5 text-sm font-medium ${splitMode === m.value ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+                className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${splitMode === m.value ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
               >
                 {m.label}
               </button>
@@ -231,9 +253,10 @@ export function ExpenseForm() {
                     key={m.id}
                     onClick={() => toggleIncluded(m.id)}
                     aria-pressed={active}
-                    className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm ${active ? 'border-primary' : 'text-muted-foreground'}`}
+                    className={`flex w-full cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${active ? 'border-primary bg-accent/50' : 'text-muted-foreground'}`}
                   >
-                    <span>{m.name}</span>
+                    <MemberAvatar name={m.name} seed={m.id} size="xs" className={active ? '' : 'opacity-50'} />
+                    <span className="min-w-0 flex-1 truncate text-left">{m.name}</span>
                     {active && owedCents !== undefined && (
                       <span className="tabular-nums text-muted-foreground">{formatCents(owedCents)}</span>
                     )}
@@ -242,6 +265,7 @@ export function ExpenseForm() {
               }
               return (
                 <div key={m.id} className="flex items-center gap-2">
+                  <MemberAvatar name={m.name} seed={m.id} size="xs" />
                   <span className="flex-1 truncate text-sm">{m.name}</span>
                   {splitMode !== 'exact' && owedCents !== undefined && (
                     <span className="w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground">

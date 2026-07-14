@@ -10,7 +10,7 @@ import { useSync } from '@/hooks/use-sync'
 import { AUTH_REQUIRED_EVENT } from '@/lib/auth'
 
 function App() {
-  const { online, syncing } = useSync()
+  const { online, syncing, pending } = useSync()
   const [authOpen, setAuthOpen] = useState(false)
 
   // Any sync request that needs the password dispatches this event.
@@ -23,7 +23,7 @@ function App() {
   return (
     <>
       <PwaPrompt />
-      <SyncBar online={online} syncing={syncing} />
+      <SyncBar online={online} syncing={syncing} pending={pending} />
       <Routes>
         <Route path="/" element={<Groups />} />
         <Route path="/g/:groupId" element={<GroupDetail />} />

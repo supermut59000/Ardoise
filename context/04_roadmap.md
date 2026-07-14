@@ -55,6 +55,10 @@ Delivered (2026-07-14):
 - Tests: 79 FE + 13 backend. tsc clean, build emits SW, dev server transforms all modules.
 - Status: **complete**.
 
+## UX pass for non-technical users (done 2026-07-14)
+
+See decisions D22 and D23. Highlights: member avatars (colour + initials), haptic feedback, near-instant sync (~1s debounce after an edit), pending-changes indicator, per-group identity with a personal balance headline, undo after expense delete, group rename/delete and participant rename UI.
+
 ## What makes this simpler than Tricount
 
 - One-tap equal split as the default; advanced splits are opt-in.

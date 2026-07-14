@@ -2,8 +2,9 @@ services:
   mariadb:
     image: mariadb:11.2
     container_name: ardoise-mariadb
-    ports:
-      - "3307:3306"   # 3307 on host to avoid clashing with VroomVroom's 3306
+    # No host port: only the backend reaches MariaDB over the compose network.
+    # Docker bypasses UFW when publishing ports, so exposing the DB here would put
+    # it on the internet. For local DB access add: ports: ["127.0.0.1:3307:3306"]
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
       MYSQL_DATABASE: ardoise
@@ -26,7 +27,8 @@ services:
       dockerfile: Dockerfile
     container_name: ardoise-backend
     ports:
-      - "8065:8000"
+      # Loopback only: reachable for local dev, never from the internet.
+      - "127.0.0.1:8065:8000"
     env_file:
       - ./backend/.env.docker
     volumes:
@@ -54,7 +56,9 @@ services:
       dockerfile: Dockerfile
     container_name: ardoise-frontend
     ports:
-      - "3060:80"
+      # Loopback only: Caddy reverse-proxies to 127.0.0.1:3060. Nothing else is
+      # exposed to the internet.
+      - "127.0.0.1:3060:80"
     depends_on:
       - backend
     restart: unless-stopped

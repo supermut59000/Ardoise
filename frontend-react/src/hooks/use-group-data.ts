@@ -1,7 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '@/db/dexie'
 import { activeExpenses, activeMembers, activeSettlements, foldOps } from '@/sync/fold'
-import { computeBalances } from '@/domain/balances'
+import { computeBalances, referencedMemberIds } from '@/domain/balances'
 import { simplifyDebts } from '@/domain/simplify-debts'
 import type { Balance, Expense, Group, Member, Settlement, Transfer } from '@/domain/types'
 
@@ -12,6 +12,8 @@ export interface GroupData {
   settlements: Settlement[]
   balances: Balance[]
   transfers: Transfer[]
+  /** Member ids that appear in a depense/remboursement (cannot be removed yet). */
+  referenced: Set<string>
 }
 
 /**
@@ -28,6 +30,7 @@ export function useGroupData(groupId: string): GroupData | undefined {
     const settlements = activeSettlements(state, groupId)
     const balances = computeBalances(members, expenses, settlements)
     const transfers = simplifyDebts(balances)
-    return { group: state.groups[groupId], members, expenses, settlements, balances, transfers }
+    const referenced = referencedMemberIds(expenses, settlements)
+    return { group: state.groups[groupId], members, expenses, settlements, balances, transfers, referenced }
   }, [groupId])
 }

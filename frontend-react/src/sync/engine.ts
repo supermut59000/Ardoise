@@ -1,11 +1,17 @@
 import { db, ingestOps, type ArdoiseDB } from '@/db/dexie'
 import * as client from './client'
-import { toWire } from './client'
+import { SyncError, toWire } from './client'
 import type { Operation } from './operation'
 
 export interface SyncResult {
   pushed: number
   pulled: number
+}
+
+/** Outcome of a full sync pass, so the UI can react (prompt for password, etc.). */
+export interface SyncSummary {
+  authError: boolean // at least one group was rejected for a bad/missing password
+  networkError: boolean // at least one group failed for a transient reason
 }
 
 /**
@@ -47,17 +53,32 @@ export async function syncGroup(groupId: string, database: ArdoiseDB = db): Prom
   return { pushed, pulled: ops.length }
 }
 
-/** Sync every registered/joined group. Errors (offline, transient) are swallowed
- *  per group so one failure does not block the others; the next tick retries. */
-export async function syncAllGroups(database: ArdoiseDB = db): Promise<void> {
+/** Sync every registered/joined group. Errors are classified (not shown to the
+ *  user) so the caller can react: a 401 means the password is wrong/missing. One
+ *  group's failure never blocks the others; the next tick retries. */
+export async function syncAllGroups(database: ArdoiseDB = db): Promise<SyncSummary> {
   const states = await database.syncState.toArray()
+  let authError = false
+  let networkError = false
   for (const s of states) {
     try {
       await syncGroup(s.groupId, database)
-    } catch {
-      // transient; retry on the next trigger
+    } catch (e) {
+      if (e instanceof SyncError && e.status === 401) authError = true
+      else networkError = true
     }
   }
+  return { authError, networkError }
+}
+
+/** How many local ops in shared groups have not reached the server yet. Drives
+ *  the "changes pending" indicator so nothing silently fails to sync. */
+export async function countUnsyncedShared(database: ArdoiseDB = db): Promise<number> {
+  const states = await database.syncState.toArray()
+  if (states.length === 0) return 0
+  const shared = new Set(states.map((s) => s.groupId))
+  const unsynced = await database.operations.where('synced').equals(0).toArray()
+  return unsynced.filter((o) => shared.has(o.groupId)).length
 }
 
 /** Register a local group on the server, store its share code, and push it. */
