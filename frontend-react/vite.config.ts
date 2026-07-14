@@ -10,7 +10,15 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt', not 'autoUpdate': autoUpdate force-reloads the page the moment
+      // a new SW activates (losing any in-progress form) and never fires
+      // needRefresh, so the PwaPrompt toast would be dead code.
+      registerType: 'prompt',
+      // Custom SW (src/sw.ts): same precache + fallback as the generated one,
+      // plus the Web Push handlers (push, notificationclick).
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       includeAssets: ['icons/icon-192.png', 'icons/icon-512.png'],
       manifest: {
         name: 'Ardoise',
@@ -27,10 +35,8 @@ export default defineConfig({
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
-      workbox: {
+      injectManifest: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        // App shell is precached; data is local-first (Dexie), so no runtime API caching needed.
-        navigateFallback: '/index.html',
       },
       devOptions: {
         enabled: false,

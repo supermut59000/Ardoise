@@ -1,8 +1,10 @@
-import { db } from '@/db/dexie'
+import { db, ingestOps, type ArdoiseDB } from '@/db/dexie'
 import { activeExpenses, activeMembers, foldOps } from '@/sync/fold'
 import { computeOwed } from '@/domain/split'
+import { emitLocalChange } from '@/sync/events'
 import type { Expense, Member } from '@/domain/types'
 import type { Operation } from '@/sync/operation'
+import { todayIso } from './format'
 
 // ---- Pure builders (unit-tested) ----
 
@@ -20,6 +22,77 @@ export function buildJsonExport(groupName: string, ops: Operation[]): string {
     null,
     2,
   )
+}
+
+const ENTITIES = new Set(['group', 'member', 'expense', 'settlement'])
+const ACTIONS = new Set(['create', 'update', 'delete'])
+
+function isValidOp(o: unknown): o is Operation {
+  if (typeof o !== 'object' || o === null) return false
+  const r = o as Record<string, unknown>
+  return (
+    typeof r.opId === 'string' && r.opId.length > 0 &&
+    typeof r.groupId === 'string' && r.groupId.length > 0 &&
+    typeof r.entityId === 'string' && r.entityId.length > 0 &&
+    ENTITIES.has(r.entity as string) &&
+    ACTIONS.has(r.action as string) &&
+    typeof r.payload === 'object' && r.payload !== null &&
+    typeof r.actor === 'string' &&
+    typeof r.lamport === 'number' && Number.isFinite(r.lamport) &&
+    typeof r.createdAt === 'number' && Number.isFinite(r.createdAt)
+  )
+}
+
+/**
+ * Parse an Ardoise JSON export back into operations (the "re-import by replay"
+ * side of own-your-data). Throws a French message if the file is not an Ardoise
+ * export; silently skips individual malformed ops (returned separately so the
+ * UI can report the count). Imported ops are marked unsynced so a shared group
+ * re-pushes them (the server dedups by opId, so re-importing is always safe).
+ */
+export function parseJsonExport(text: string): { ops: Operation[]; invalid: number } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error("Ce fichier n'est pas un export Ardoise valide")
+  }
+  const envelope = parsed as { app?: unknown; operations?: unknown }
+  if (envelope?.app !== 'ardoise' || !Array.isArray(envelope.operations)) {
+    throw new Error("Ce fichier n'est pas un export Ardoise valide")
+  }
+  const ops: Operation[] = []
+  let invalid = 0
+  for (const raw of envelope.operations) {
+    if (isValidOp(raw)) ops.push({ ...raw, synced: 0 })
+    else invalid++
+  }
+  return { ops, invalid }
+}
+
+export interface ImportResult {
+  imported: number // new ops folded in
+  existing: number // ops already on this device (untouched)
+  invalid: number // malformed entries skipped
+}
+
+/**
+ * Replay an export file into the local log. Idempotent: ops already present are
+ * left untouched (their synced flag included). New ops arrive unsynced, so the
+ * sync engine re-pushes them to the server for any shared group.
+ */
+export async function importJsonExport(text: string, database: ArdoiseDB = db): Promise<ImportResult> {
+  const { ops, invalid } = parseJsonExport(text)
+  const ids = ops.map((o) => o.opId)
+  const existingIds = new Set(
+    (await database.operations.where('opId').anyOf(ids).primaryKeys()) as string[],
+  )
+  const fresh = ops.filter((o) => !existingIds.has(o.opId))
+  if (fresh.length > 0) {
+    await ingestOps(database, fresh)
+    emitLocalChange() // let the sync engine push them promptly
+  }
+  return { imported: fresh.length, existing: existingIds.size, invalid }
 }
 
 function csvField(value: string): string {
@@ -64,7 +137,7 @@ function download(filename: string, mime: string, text: string): void {
 
 const slug = (s: string) =>
   s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'groupe'
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => todayIso()
 
 export async function exportGroupJson(groupId: string): Promise<void> {
   const ops = await db.operations.where('groupId').equals(groupId).toArray()

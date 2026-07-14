@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { shareGroup } from '@/sync/engine'
 import { SyncError } from '@/sync/client'
 import { promptForApiKey } from '@/lib/auth'
+import { syncPushGroups } from '@/lib/push'
 
 interface Props {
   groupId: string
@@ -27,7 +28,10 @@ export function ShareDialog({ groupId, open, onOpenChange }: Props) {
     setLoading(true)
     // Registering is idempotent: opening this again returns the same code.
     shareGroup(groupId)
-      .then(setCode)
+      .then((c) => {
+        setCode(c)
+        void syncPushGroups() // the group is now shared: follow its notifications
+      })
       .catch((e) => {
         // Needs the shared password? Open the key dialog instead of a dead error.
         if (e instanceof SyncError && e.status === 401) {

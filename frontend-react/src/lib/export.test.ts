@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildCsvExport, buildJsonExport } from './export'
+import { buildCsvExport, buildJsonExport, importJsonExport, parseJsonExport } from './export'
+import { ArdoiseDB } from '@/db/dexie'
 import type { Expense, Member } from '@/domain/types'
 import type { Operation } from '@/sync/operation'
 
@@ -28,6 +29,63 @@ describe('buildJsonExport', () => {
     expect(parsed.group).toBe('Trip')
     expect(parsed.operationCount).toBe(1)
     expect(parsed.operations).toHaveLength(1)
+  })
+})
+
+const wireOp = (opId: string, over: Partial<Operation> = {}): Operation => ({
+  opId,
+  groupId: 'g',
+  entity: 'expense',
+  entityId: `ent-${opId}`,
+  action: 'create',
+  payload: { amountCents: 100 },
+  actor: 'devA',
+  lamport: 1,
+  createdAt: 1_700_000_000_000,
+  synced: 1, // exports carry the device's flag; import must ignore it
+  ...over,
+})
+
+describe('parseJsonExport', () => {
+  it('round-trips a build and marks every op unsynced (re-pushable)', () => {
+    const text = buildJsonExport('Trip', [wireOp('o1'), wireOp('o2')])
+    const { ops, invalid } = parseJsonExport(text)
+    expect(ops.map((o) => o.opId)).toEqual(['o1', 'o2'])
+    expect(ops.every((o) => o.synced === 0)).toBe(true)
+    expect(invalid).toBe(0)
+  })
+
+  it('rejects a file that is not an Ardoise export, in French', () => {
+    expect(() => parseJsonExport('pas du json')).toThrow(/export Ardoise/)
+    expect(() => parseJsonExport('{"app":"autre","operations":[]}')).toThrow(/export Ardoise/)
+    expect(() => parseJsonExport('{"app":"ardoise"}')).toThrow(/export Ardoise/)
+  })
+
+  it('skips malformed entries and counts them', () => {
+    const text = JSON.stringify({
+      app: 'ardoise',
+      operations: [wireOp('ok'), { opId: 'bad' }, 42, wireOp('ok2', { entity: 'invalid' as never })],
+    })
+    const { ops, invalid } = parseJsonExport(text)
+    expect(ops.map((o) => o.opId)).toEqual(['ok'])
+    expect(invalid).toBe(3)
+  })
+})
+
+describe('importJsonExport', () => {
+  it('replays an export into a device and is idempotent on re-import', async () => {
+    const d = new ArdoiseDB('export-import-test')
+    await d.open()
+    const text = buildJsonExport('Trip', [wireOp('i1'), wireOp('i2')])
+
+    const first = await importJsonExport(text, d)
+    expect(first).toEqual({ imported: 2, existing: 0, invalid: 0 })
+    // stored unsynced so a shared group re-pushes them (server dedups by opId)
+    expect((await d.operations.toArray()).every((o) => o.synced === 0)).toBe(true)
+
+    const second = await importJsonExport(text, d)
+    expect(second).toEqual({ imported: 0, existing: 2, invalid: 0 })
+    expect(await d.operations.count()).toBe(2)
   })
 })
 

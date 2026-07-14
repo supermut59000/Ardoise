@@ -21,12 +21,23 @@ export class SyncError extends Error {
   }
 }
 
+/** A request that never settles (half-open connection, wedged upstream) would
+ *  otherwise hold the sync engine's in-flight lock forever. 15s is generous for
+ *  a LAN/homelab round trip; the abort surfaces as a transient SyncError. */
+const REQUEST_TIMEOUT_MS = 15_000
+
+function requestTimeout(): AbortSignal | undefined {
+  // Older WebViews may lack AbortSignal.timeout; they just skip the guard.
+  return typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(REQUEST_TIMEOUT_MS) : undefined
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const key = getApiKey()
   let res: Response
   try {
     res = await fetch(`${API_BASE}${path}`, {
       ...init,
+      signal: requestTimeout(),
       headers: {
         'Content-Type': 'application/json',
         ...(key ? { 'X-API-Key': key } : {}),
@@ -34,7 +45,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
     })
   } catch (e) {
-    // Network unreachable / offline: a transient failure, not a rejection.
+    // Network unreachable / offline / timed out: transient, not a rejection.
     throw new SyncError(e instanceof Error ? e.message : 'network error')
   }
   if (res.status === 401) {
@@ -51,6 +62,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function checkApiKey(key: string): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/system/auth-check`, {
+      signal: requestTimeout(),
       headers: { 'X-API-Key': key },
     })
     return res.ok
@@ -99,4 +111,26 @@ export function pullOps(
   since: number,
 ): Promise<{ ops: WireOp[]; cursor: number }> {
   return request(`/groups/${groupId}/ops?since=${since}`)
+}
+
+// ---- Web Push ----
+
+export function getVapidPublicKey(): Promise<{ publicKey: string }> {
+  // 503 (SyncError) when the server has no VAPID key configured.
+  return request('/push/vapid-public-key')
+}
+
+export interface PushSubscriptionBody {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+  deviceId: string
+  groupIds: string[]
+}
+
+export function subscribePush(body: PushSubscriptionBody): Promise<{ ok: boolean }> {
+  return request('/push/subscribe', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function unsubscribePush(endpoint: string): Promise<{ ok: boolean }> {
+  return request('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) })
 }

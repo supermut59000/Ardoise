@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Wallet, ChevronRight, Menu, Sun, Moon, Download, LogIn, DownloadCloud, KeyRound, Users } from 'lucide-react'
+import { Plus, Wallet, ChevronRight, Menu, Sun, Moon, Download, Upload, LogIn, DownloadCloud, KeyRound, Users, Bell, BellOff } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -14,12 +14,14 @@ import { InstallHelpDialog } from '@/components/layout/InstallHelpDialog'
 import { MemberAvatar } from '@/components/ui/member-avatar'
 import { useGroups } from '@/hooks/use-groups'
 import { useInstallPrompt } from '@/hooks/use-install-prompt'
+import { usePush } from '@/hooks/use-push'
+import { syncPushGroups } from '@/lib/push'
 import { createGroup } from '@/sync/ops'
 import { joinGroup } from '@/sync/engine'
 import { SyncError } from '@/sync/client'
-import { promptForApiKey } from '@/lib/auth'
+import { AUTH_SUCCESS_EVENT, promptForApiKey } from '@/lib/auth'
 import { avatarColor } from '@/lib/avatar'
-import { exportAllJson } from '@/lib/export'
+import { exportAllJson, importJsonExport } from '@/lib/export'
 import { formatCents } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
 
@@ -29,6 +31,7 @@ export function Groups() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { resolvedTheme, setTheme } = useTheme()
   const { isStandalone, canInstall, isIOS, promptInstall } = useInstallPrompt()
+  const push = usePush()
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
   const [joinCode, setJoinCode] = useState('')
@@ -36,6 +39,9 @@ export function Groups() {
   const [installHelpOpen, setInstallHelpOpen] = useState(false)
   const isDark = resolvedTheme === 'dark'
   const autoJoined = useRef(false)
+  // A join interrupted by the password gate; retried once the key is accepted.
+  const pendingJoin = useRef<string | null>(null)
+  const importInput = useRef<HTMLInputElement>(null)
   // Show install only when not already installed and either the native prompt is
   // ready (Android) or we're on iOS (manual instructions).
   const showInstall = !isStandalone && (canInstall || isIOS)
@@ -52,9 +58,15 @@ export function Groups() {
     try {
       const groupId = await joinGroup(trimmed)
       setJoinCode('')
+      pendingJoin.current = null
+      void syncPushGroups() // follow the new group's notifications too
       navigate(`/g/${groupId}`)
     } catch (e) {
       if (e instanceof SyncError && e.status === 401) {
+        // First-run friend flow: remember the code (and show it in the input)
+        // so entering the password does not lose the invite.
+        pendingJoin.current = trimmed
+        setJoinCode(trimmed)
         promptForApiKey()
       } else {
         toast.error('Code invalide ou serveur injoignable')
@@ -63,6 +75,8 @@ export function Groups() {
       setJoining(false)
     }
   }
+  const handleJoinRef = useRef(handleJoin)
+  handleJoinRef.current = handleJoin
 
   // Auto-join when arriving via an invite link (/?join=CODE).
   useEffect(() => {
@@ -74,6 +88,33 @@ export function Groups() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Once the password is accepted, retry the join that hit the 401.
+  useEffect(() => {
+    const onAuthSuccess = () => {
+      const code = pendingJoin.current
+      if (code) {
+        pendingJoin.current = null
+        void handleJoinRef.current(code)
+      }
+    }
+    window.addEventListener(AUTH_SUCCESS_EVENT, onAuthSuccess)
+    return () => window.removeEventListener(AUTH_SUCCESS_EVENT, onAuthSuccess)
+  }, [])
+
+  async function handleImportFile(file: File) {
+    try {
+      const result = await importJsonExport(await file.text())
+      if (result.imported > 0) {
+        toast.success(`${result.imported} operation${result.imported > 1 ? 's' : ''} importee${result.imported > 1 ? 's' : ''}`)
+      } else {
+        toast.info('Rien de nouveau dans ce fichier, tout etait deja present.')
+      }
+      if (result.invalid > 0) toast.warning(`${result.invalid} entree(s) illisible(s) ignoree(s)`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Import impossible')
+    }
+  }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -116,12 +157,45 @@ export function Groups() {
             <DropdownMenuItem onSelect={() => promptForApiKey()}>
               <KeyRound /> Mot de passe du serveur
             </DropdownMenuItem>
+            {push.state === 'off' && (
+              <DropdownMenuItem onSelect={() => void push.enable()} disabled={push.busy}>
+                <Bell /> Activer les notifications
+              </DropdownMenuItem>
+            )}
+            {push.state === 'on' && (
+              <DropdownMenuItem onSelect={() => void push.disable()} disabled={push.busy}>
+                <BellOff /> Desactiver les notifications
+              </DropdownMenuItem>
+            )}
+            {/* iOS in Safari: push only exists once installed on the home screen */}
+            {push.state === 'unsupported' && isIOS && !isStandalone && (
+              <DropdownMenuItem onSelect={() => setInstallHelpOpen(true)}>
+                <Bell /> Notifications (installer l'app d'abord)
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => { void exportAllJson() }}>
               <Download /> Exporter toutes les donnees (JSON)
             </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => importInput.current?.click()}>
+              <Upload /> Importer un export (JSON)
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* Hidden file input driven by the menu item above */}
+        <input
+          ref={importInput}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            e.target.value = '' // allow re-picking the same file
+            if (file) void handleImportFile(file)
+          }}
+        />
       </header>
 
       <form onSubmit={handleCreate} className="mb-6 flex gap-2">

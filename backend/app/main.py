@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.v1.api import api_router
@@ -39,4 +40,6 @@ def health_check():
         db.close()
         return {"status": "healthy"}
     except Exception:
-        return {"status": "unhealthy", "db": "unreachable"}
+        # 503, not 200: the Docker healthcheck and any monitor must see a DB
+        # outage as unhealthy, not a green "unhealthy" body.
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "db": "unreachable"})

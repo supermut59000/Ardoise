@@ -3,7 +3,7 @@ import { ArdoiseDB } from '@/db/dexie'
 import { foldOps } from './fold'
 import { addExpense, addMember, addSettlement, createGroup } from './ops'
 import { activeSettlements } from './fold'
-import { countUnsyncedShared, joinGroup, shareGroup, syncAllGroups, syncGroup } from './engine'
+import { PUSH_BATCH, countUnsyncedFor, countUnsyncedShared, joinGroup, leaveGroup, shareGroup, syncAllGroups, syncGroup } from './engine'
 import type { WireOp } from './client'
 
 /**
@@ -17,7 +17,28 @@ function installMockServer() {
   const codes = new Map<string, string>() // shareCode -> groupId
   const ops: (WireOp & { seq: number })[] = []
   let seq = 0
-  const server = { offline: false, authFail: false, ops, requests: 0 }
+  const server = {
+    offline: false,
+    authFail: false,
+    ops,
+    requests: 0,
+    pushCalls: 0,
+    /** Total server data loss: DB volume wiped / recreated from scratch. */
+    wipe() {
+      groups.clear()
+      codes.clear()
+      ops.length = 0
+      seq = 0
+    },
+    /** Restore from an older backup: everything after `toSeq` is lost and the
+     *  autoincrement counter rewinds with it. Groups/codes survive. */
+    restore(toSeq: number) {
+      for (let i = ops.length - 1; i >= 0; i--) {
+        if (ops[i].seq > toSeq) ops.splice(i, 1)
+      }
+      seq = toSeq
+    },
+  }
 
   function json(data: unknown, status = 200) {
     return { ok: status < 400, status, json: async () => data } as Response
@@ -54,6 +75,7 @@ function installMockServer() {
     if ((m = path.match(/^\/api\/v1\/groups\/([^/]+)\/ops$/)) && method === 'POST') {
       const gid = m[1]
       if (!groups.has(gid)) return json({ detail: 'not registered' }, 404)
+      server.pushCalls++
       let accepted = 0
       for (const o of body.ops as WireOp[]) {
         if (ops.some((e) => e.opId === o.opId)) continue
@@ -71,7 +93,10 @@ function installMockServer() {
       const rows = ops
         .filter((o) => o.groupId === gid && o.seq > since)
         .sort((a, b) => a.seq - b.seq)
-      const cursor = rows.length ? rows[rows.length - 1].seq : since
+      // Like the real server: an empty pull returns the group's REAL max seq
+      // (not `since` echoed), so a client ahead of the server detects a rewind.
+      const groupMax = ops.filter((o) => o.groupId === gid).reduce((mx, o) => Math.max(mx, o.seq), 0)
+      const cursor = rows.length ? rows[rows.length - 1].seq : groupMax
       // strip seq from the wire payload, like the real server
       return json({ ops: rows.map(({ seq: _seq, ...w }) => w), cursor })
     }
@@ -261,6 +286,104 @@ describe('sync status reporting', () => {
     expect(await countUnsyncedShared(db1)).toBe(1)
     await syncGroup(g, db1)
     expect(await countUnsyncedShared(db1)).toBe(0)
+  })
+})
+
+describe('self-healing after server data loss', () => {
+  it('re-registers and re-pushes the full log after a total server wipe (404)', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    await shareGroup(g, db1)
+    expect(server.ops).toHaveLength(4)
+
+    // Homelab disaster: DB volume recreated from scratch. Every call 404s.
+    server.wipe()
+
+    // One ordinary sync pass heals everything: no error surfaced, group
+    // re-registered, full history re-pushed (the device IS the source of truth).
+    const summary = await syncAllGroups(db1)
+    expect(summary).toEqual({ authError: false, networkError: false })
+    expect(server.ops.filter((o) => o.groupId === g)).toHaveLength(4)
+    expect((await db1.operations.toArray()).filter((o) => o.synced === 0)).toHaveLength(0)
+
+    // A friend can join again with the (new) share code and gets everything.
+    const state = await db1.syncState.get(g)
+    const db2 = await freshDb()
+    await joinGroup(state!.shareCode, db2)
+    expect(foldOps(await db2.operations.toArray())).toEqual(foldOps(await db1.operations.toArray()))
+  })
+
+  it('detects a rewound server (restore from an older backup) and re-seeds the lost ops', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    const code = await shareGroup(g, db1) // seed ops land as seq 1..4
+    const db2 = await freshDb()
+    await joinGroup(code, db2) // db2 cursor = 4
+
+    // db2 records an expense and pushes it (seq 5, db2 cursor = 5).
+    const members2 = Object.values(foldOps(await db2.operations.toArray()).members)
+    await addExpense(
+      g,
+      { description: 'Perdu', amountCents: 700, paidBy: members2[0].id, spentAt: '2026-07-14', shares: [{ memberId: members2[0].id, weight: 1 }] },
+      db2,
+    )
+    await syncGroup(g, db2)
+    expect(server.ops).toHaveLength(5)
+
+    // The server is restored from the backup taken at seq 4: seq 5 is lost.
+    server.restore(4)
+    expect(server.ops).toHaveLength(4)
+
+    // db2's next sync sees the cursor rewind, resets, and re-pushes the lost op.
+    await syncGroup(g, db2)
+    expect(server.ops.filter((o) => o.groupId === g)).toHaveLength(5)
+    expect(server.ops.some((o) => o.payload.description === 'Perdu')).toBe(true)
+
+    // db1 pulls and everyone converges again.
+    await syncGroup(g, db1)
+    expect(foldOps(await db1.operations.toArray())).toEqual(foldOps(await db2.operations.toArray()))
+  })
+})
+
+describe('push batching', () => {
+  it('splits a large first push into multiple requests, none oversized', async () => {
+    const db1 = await freshDb()
+    const g = await createGroup({ name: 'Gros historique' }, db1)
+    const a = await addMember(g, 'Alice', db1)
+    const extra = PUSH_BATCH + 5 // forces at least two batches
+    for (let i = 0; i < extra; i++) {
+      await addExpense(
+        g,
+        { description: `e${i}`, amountCents: 100, paidBy: a, spentAt: '2026-07-14', shares: [{ memberId: a, weight: 1 }] },
+        db1,
+      )
+    }
+
+    await shareGroup(g, db1)
+
+    const total = extra + 2 // + group create + member create
+    expect(server.ops.filter((o) => o.groupId === g)).toHaveLength(total)
+    expect(server.pushCalls).toBeGreaterThan(1) // batched, not one giant body
+    expect((await db1.operations.toArray()).filter((o) => o.synced === 0)).toHaveLength(0)
+  })
+})
+
+describe('leaveGroup (this device only)', () => {
+  it('drops the group locally, keeps other groups, and re-joining restores it', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    const code = await shareGroup(g, db1)
+    const gLocal = await createGroup({ name: 'Perso' }, db1) // untouched bystander
+    expect(await countUnsyncedFor(g, db1)).toBe(0)
+
+    await leaveGroup(g, db1)
+
+    expect(await db1.operations.where('groupId').equals(g).count()).toBe(0)
+    expect(await db1.syncState.get(g)).toBeUndefined()
+    expect(await db1.operations.where('groupId').equals(gLocal).count()).toBe(1)
+    // the server kept everything: re-joining brings the full history back
+    await joinGroup(code, db1)
+    expect(await db1.operations.where('groupId').equals(g).count()).toBe(4)
   })
 })
 

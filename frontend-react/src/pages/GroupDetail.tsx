@@ -1,8 +1,8 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Receipt, ArrowRight, Check, Menu, Users, Sun, Moon,
-  Pencil, Share2, FileJson, FileSpreadsheet, Undo2, Trash2,
+  Pencil, Share2, FileJson, FileSpreadsheet, Undo2, Trash2, LogOut,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
@@ -17,8 +17,10 @@ import { ParticipantsDialog } from '@/components/group/ParticipantsDialog'
 import { ShareDialog } from '@/components/group/ShareDialog'
 import { RenameGroupDialog } from '@/components/group/RenameGroupDialog'
 import { DeleteGroupDialog } from '@/components/group/DeleteGroupDialog'
+import { LeaveGroupDialog } from '@/components/group/LeaveGroupDialog'
 import { MemberAvatar } from '@/components/ui/member-avatar'
 import { useGroupData } from '@/hooks/use-group-data'
+import { isShared } from '@/sync/engine'
 import { addExpense, addSettlement, deleteExpense, deleteSettlement } from '@/sync/ops'
 import { memberShareCents } from '@/domain/balances'
 import { exportGroupCsv, exportGroupJson } from '@/lib/export'
@@ -40,6 +42,16 @@ export function GroupDetail() {
   const [shareOpen, setShareOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [leaveOpen, setLeaveOpen] = useState(false)
+  const [settling, setSettling] = useState(false)
+  // "Quitter" only makes sense for a shared group (a local-only group's data
+  // exists nowhere else, so the only removal is a real delete).
+  const [shared, setShared] = useState(false)
+  useEffect(() => {
+    isShared(groupId)
+      .then(setShared)
+      .catch(() => setShared(false))
+  }, [groupId, shareOpen]) // re-check after the share dialog may have registered it
 
   if (data === undefined) {
     return <p className="mx-auto max-w-md p-6 text-sm text-muted-foreground">Chargement...</p>
@@ -92,6 +104,8 @@ export function GroupDetail() {
   }
 
   async function handleSettle(t: Transfer) {
+    if (settling) return // a double tap must not record the settlement twice
+    setSettling(true)
     try {
       await addSettlement(groupId, {
         fromMemberId: t.fromMemberId,
@@ -103,6 +117,8 @@ export function GroupDetail() {
       toast.success('Remboursement enregistre')
     } catch {
       toast.error('Enregistrement impossible')
+    } finally {
+      setSettling(false)
     }
   }
 
@@ -165,6 +181,11 @@ export function GroupDetail() {
             <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
               <Pencil /> Renommer le groupe
             </DropdownMenuItem>
+            {shared && (
+              <DropdownMenuItem onSelect={() => setLeaveOpen(true)}>
+                <LogOut /> Quitter le groupe (cet appareil)
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onSelect={() => setDeleteOpen(true)}
               className="text-destructive focus:text-destructive [&_svg]:text-destructive"
@@ -369,7 +390,7 @@ export function GroupDetail() {
                       <MemberAvatar name={nameOf(t.toMemberId)} seed={t.toMemberId} size="xs" />
                       <span className="truncate font-medium">{label(t.toMemberId)}</span>
                       <span className="ml-auto shrink-0 tabular-nums font-semibold">{formatCents(t.amountCents, currency)}</span>
-                      <Button size="sm" variant="outline" className="ml-1 h-8 shrink-0" onClick={() => handleSettle(t)}>
+                      <Button size="sm" variant="outline" className="ml-1 h-8 shrink-0" disabled={settling} onClick={() => handleSettle(t)}>
                         Regler
                       </Button>
                     </Card>
@@ -437,6 +458,7 @@ export function GroupDetail() {
       <ShareDialog groupId={groupId} open={shareOpen} onOpenChange={setShareOpen} />
       <RenameGroupDialog groupId={groupId} currentName={group.name} open={renameOpen} onOpenChange={setRenameOpen} />
       <DeleteGroupDialog groupId={groupId} groupName={group.name} open={deleteOpen} onOpenChange={setDeleteOpen} />
+      <LeaveGroupDialog groupId={groupId} groupName={group.name} open={leaveOpen} onOpenChange={setLeaveOpen} />
     </main>
   )
 }

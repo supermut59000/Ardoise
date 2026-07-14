@@ -1,6 +1,6 @@
 # 04 - Roadmap and build status
 
-Each phase is independently usable. Current status: **Phase 4 complete + UX/visual passes D22-D28, deployed on the homelab** (2026-07-14). Next: feedback from real use with friends (user will direct).
+Each phase is independently usable. Current status: **Phase 4 complete + audit/UX passes D22-D30, deployed on the homelab** (2026-07-14). Next: feedback from real use with friends (user will direct).
 
 ## Phase 0 - Scaffold (done 2026-07-13)
 
@@ -51,9 +51,13 @@ Delivered (2026-07-14):
 - **Backend pytest**: 13 tests via the Docker-run pattern.
 - **PWA update flow**: [PwaPrompt](../frontend-react/src/components/layout/PwaPrompt.tsx) via `useRegisterSW` (virtual:pwa-register/react). Registers the SW, prompts "Nouvelle version disponible / Recharger" on `needRefresh`, and re-checks hourly. Manual `registerSW` removed from main.tsx.
 - **PWA install flow**: [use-install-prompt](../frontend-react/src/hooks/use-install-prompt.ts) captures Android `beforeinstallprompt`; home menu shows "Installer l'application" (native prompt on Android, [InstallHelpDialog](../frontend-react/src/components/layout/InstallHelpDialog.tsx) with share->add-to-home-screen steps on iOS); hidden once running standalone.
-- **Web-push reminders**: skipped (iOS-limited, low value for an expense splitter).
+- **Web-push reminders**: skipped in this phase; superseded by D30 (2026-07-14), which shipped Web Push ACTIVITY notifications (not reminders) at the user's explicit request: "core to feeling like a real app". Android/desktop everywhere, iOS 16.4+ when installed to the home screen.
 - Tests: 79 FE + 13 backend. tsc clean, build emits SW, dev server transforms all modules.
 - Status: **complete**.
+
+## Resilience pass: "bulletproof homelab" (done 2026-07-14)
+
+See decision D29. Sync self-heals after any server-side data loss (404 wipe or cursor rewind after a restore-from-backup): the devices re-register and re-seed the full log automatically. Requests time out at 15s (no more wedged sync engine), pushes are batched (500 ops) under a raised nginx body limit, PWA updates prompt instead of force-reloading, an invite-link join interrupted by the password gate retries automatically, "Regler" is double-tap-proof, dates are local-timezone (not UTC), `/health` returns 503 on DB outage. New features: JSON import by replay (home menu) and "Quitter le groupe (cet appareil)" for shared groups. 117 FE + 22 backend tests.
 
 ## UX pass for non-technical users (done 2026-07-14)
 

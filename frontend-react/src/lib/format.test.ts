@@ -1,5 +1,28 @@
-import { describe, it, expect } from 'vitest'
-import { dayLabel, parseAmountToCents, formatCents } from './format'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { dayLabel, parseAmountToCents, formatCents, todayIso } from './format'
+
+describe('todayIso', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
+  })
+
+  it('uses the device timezone, not UTC (late-evening bug)', () => {
+    // UTC+14: it is already the 15th locally while UTC still says the 14th.
+    // The old toISOString() implementation returned 2026-07-14 here.
+    vi.stubEnv('TZ', 'Pacific/Kiritimati')
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-14T12:00:00Z'))
+    expect(todayIso()).toBe('2026-07-15')
+  })
+
+  it('pads month and day to two digits', () => {
+    vi.stubEnv('TZ', 'UTC')
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-05T10:00:00Z'))
+    expect(todayIso()).toBe('2026-03-05')
+  })
+})
 
 describe('parseAmountToCents', () => {
   it('parses integers and decimals', () => {

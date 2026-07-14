@@ -30,9 +30,19 @@ Operation
 
 ## Sync protocol (stateless server)
 
-- **Push**: `POST /groups/{id}/ops` with all local ops the server has not ack'd. Server stores them idempotently (unique `op_id`), returns the new server cursor.
-- **Pull**: `GET /groups/{id}/ops?since={cursor}` returns ops from other devices. Client folds them into Dexie.
+- **Push**: `POST /groups/{id}/ops` with local ops the server has not ack'd, in batches of 500 (`PUSH_BATCH`) so a huge catch-up never trips the proxy's body-size limit. Server stores them idempotently (unique `op_id`), returns the new server cursor.
+- **Pull**: `GET /groups/{id}/ops?since={cursor}` returns ops from other devices plus the group's REAL max seq (even when empty). Client folds them into Dexie.
 - The server **only appends and serves ops**. It never merges or decides. All devices compute the same state from the same ops.
+- Every request carries a 15s abort timeout so a half-open connection can never wedge the sync engine.
+
+## Self-healing: the server is disposable
+
+The devices hold the full log, so any server-side data loss is recoverable from the phones, automatically:
+
+- **404 on push/pull** (DB wiped/recreated): the client re-registers the same group id, marks its whole local log unsynced, resets the cursor, and re-pushes everything. Each device heals itself the same way; the server converges back to the union of everyone's history. A new share code may be minted (old invite links die; the app shows the current code in Partager).
+- **Pull cursor below ours** (DB restored from an older backup): the client detects the rewind and does the same reset-and-reseed, restoring the ops the backup lost.
+
+Both paths are idempotent (`op_id` dedup) and covered by engine tests (wipe and rewind scenarios).
 
 ## When does sync run? (iOS reality check)
 
@@ -41,10 +51,23 @@ Operation
 - Call `navigator.storage.persist()` on first launch so iOS does not evict IndexedDB after 7 idle days.
 - Everything works with zero connectivity; sync is pure catch-up.
 
+## Push notifications (D30)
+
+The relay is also the natural fan-out point: when a device pushes new ops, the
+server notifies every subscribed device following that group, except the
+author's own (`device_id == actor`). Messages are built from op payloads only
+(the server still never folds state). Batches above 50 accepted ops stay
+silent (that is a self-heal reseed or an import, not live activity). The custom
+service worker ([src/sw.ts](../frontend-react/src/sw.ts), injectManifest) shows
+the notification and opens the group on tap. Subscriptions are device-scoped
+(like identity, D23) and carry the device's shared-group list, re-sent on app
+start and after share/join/leave. Requires `VAPID_PRIVATE_KEY` server-side;
+without it push is cleanly off and the menu entry hides.
+
 ## Known iOS PWA constraints (designed around, not fought)
 
 - Must be **Add-to-Home-Screen** for standalone mode and any push.
 - **No Background Sync**, so sync only while the app is open (acceptable; we never block the UI).
 - IndexedDB can be **evicted after 7 idle days**, so call `navigator.storage.persist()`.
-- **Web Push** only iOS 16.4+ and only when installed to home screen, so reminders are a nice-to-have, not core.
+- **Web Push** works on iOS 16.4+ but only when installed to home screen (D30); in Safari-the-tab the menu points to the install steps first.
 - No true background anything, so the op-log-on-foreground model sidesteps all of it.

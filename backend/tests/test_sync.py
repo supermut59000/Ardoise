@@ -92,3 +92,34 @@ class TestPushPull:
     def test_empty_push_is_ok(self, client):
         register(client)
         assert client.post("/api/v1/groups/g1/ops", json={"ops": []}).json()["accepted"] == 0
+
+    def test_pull_ahead_of_server_returns_real_max(self, client):
+        """
+        Rewind detection (self-heal after a DB restore from an older backup):
+        a client whose cursor is AHEAD of the server must get the server's real
+        max cursor back, not its own `since` echoed, so it can notice the rewind
+        and re-seed. The old behavior (echoing `since`) made the divergence
+        silent and permanent.
+        """
+        register(client)
+        client.post("/api/v1/groups/g1/ops", json={"ops": [make_op("o1", "g1", 1)]})
+        max_cursor = client.get("/api/v1/groups/g1/ops?since=0").json()["cursor"]
+
+        body = client.get(f"/api/v1/groups/g1/ops?since={max_cursor + 100}").json()
+        assert body["ops"] == []
+        assert body["cursor"] == max_cursor  # real max, NOT since echoed back
+
+
+class TestHealth:
+    def test_health_returns_503_when_db_unreachable(self, client, monkeypatch):
+        """Docker's healthcheck only reads the status code, so a DB outage must
+        be a 503, never a 200 with an 'unhealthy' body."""
+        import app.main as main_module
+
+        def broken_session():
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(main_module, "SessionLocal", broken_session)
+        r = client.get("/health")
+        assert r.status_code == 503
+        assert r.json()["status"] == "unhealthy"

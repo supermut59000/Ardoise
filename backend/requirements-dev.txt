@@ -1,0 +1,8 @@
+# Test-only dependencies. NOT installed in the image; install them ad hoc when
+# running the suite inside the container (matching the Docker-only convention):
+#
+#   docker compose run --rm --no-deps -v ./backend:/app backend \
+#     sh -c "pip install -q -r requirements-dev.txt && python -m pytest tests/ -q"
+#
+pytest
+httpx

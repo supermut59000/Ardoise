@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     # X-API-Key header to match. Empty = auth disabled (local dev).
     API_KEY: str = ""
 
+    # Web Push (VAPID). Empty = push disabled (endpoints answer 503, sync still
+    # works). Generate once with the one-liner in DEPLOY.md and keep it stable:
+    # rotating it invalidates every existing browser subscription.
+    # Raw EC P-256 private key, base64url (the py_vapid "raw" format).
+    VAPID_PRIVATE_KEY: str = ""
+    # Contact for the push services (required by the VAPID spec).
+    VAPID_SUBJECT: str = "mailto:admin@example.com"
+
     # Environment
     DEBUG: bool = False
     ENVIRONMENT: str = "development"

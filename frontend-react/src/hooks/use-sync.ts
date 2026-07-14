@@ -29,7 +29,10 @@ export function useSync() {
   })
 
   const runRef = useRef(async () => {
-    if (running.current || !navigator.onLine) {
+    // Note: no navigator.onLine gate. It reports the link, not the server, and
+    // some WebViews misreport offline; attempting the sync and letting the
+    // fetch fail fast is more reliable. `online` only drives the status bar.
+    if (running.current) {
       await refreshPending.current()
       return
     }

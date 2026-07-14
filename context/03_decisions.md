@@ -211,3 +211,48 @@ From real-device screenshots:
 
 Refinement of D26/D27 after user feedback: `dayLabel` full dates now always include the year ("25 mars 2026", not only cross-year), and the add-expense FAB gets `z-40` so it always paints above the expense rows (SwipeableCard transforms create their own stacking contexts).
 - *Status*: active. Verified: tsc clean, 107 FE tests (two dayLabel cases merged into one), build emits SW.
+
+### D29 - 2026-07-14 - Second audit: self-healing sync, resilience fixes, import + leave-group
+
+Second `/app-audit` pass focused on "bulletproof regardless of homelab/network/device". All flow findings fixed, plus the date bug and two features. User skipped the DB-backup suggestion (already has a 3-2-1 backup that stops containers and copies their folders).
+
+**Self-healing sync (the big one)**: the devices hold the full op log, the server is disposable, and sync now acts on it ([engine.ts](../frontend-react/src/sync/engine.ts)):
+- Push/pull 404 (server DB wiped or recreated): the client re-registers the same groupId (a new share code may be minted), marks the whole local log unsynced, resets the cursor, and re-pushes everything. Every device heals the same way, so the server converges back to the union of everyone's history. Previously this state was a silent, permanent sync failure and even manual re-sharing produced an empty group (all ops were already flagged synced).
+- Pull cursor BELOW ours (server restored from an older backup): [sync_service.pull](../backend/app/services/sync_service.py) now returns the group's real max seq on an empty pull instead of echoing `since`; the client detects `cursor < state.cursor` and re-seeds the same way. Previously peers' new ops under the old cursor were silently never pulled (permanent divergence).
+- One heal attempt per sync pass (`healed` flag); the 20s tick retries anyway.
+
+**Resilience fixes**:
+- Requests carry `AbortSignal.timeout(15s)` ([client.ts](../frontend-react/src/sync/client.ts)); a half-open connection used to leave `running.current` locked forever, freezing sync until app restart.
+- Pushes are batched (`PUSH_BATCH = 500` ops per request) and nginx got `client_max_body_size 10m`; a giant first push used to 413 and retry the same oversized body forever.
+- `use-sync` no longer gates on `navigator.onLine` (misreporting WebViews); it just tries and lets fetch fail. `online` only drives the SyncBar.
+- PWA `registerType` switched from `autoUpdate` to `prompt`: autoUpdate never fires `needRefresh` (the PwaPrompt toast was dead code) and force-reloads the page on SW activation, losing any in-progress form. Now the toast works as designed.
+- Invite-link first run: a join interrupted by the password gate is remembered and retried automatically after the key is accepted (`AUTH_SUCCESS_EVENT` in [auth.ts](../frontend-react/src/lib/auth.ts), retry in [Groups.tsx](../frontend-react/src/pages/Groups.tsx)); the code is also prefilled in the join input. Previously the code was lost and the friend landed on an empty home screen.
+- "Regler" is disabled while the settlement op writes (double-tap recorded it twice).
+- `/health` returns 503 when the DB is unreachable (was HTTP 200 with an "unhealthy" body, which kept the Docker healthcheck green during an outage).
+
+**Bug**: `todayIso()` now builds the date from local components. `toISOString()` is UTC, so from midnight to 2am Paris time, new expenses and settlements were dated yesterday.
+
+**Features**:
+- **Import JSON by replay** ([export.ts](../frontend-react/src/lib/export.ts) `parseJsonExport`/`importJsonExport`, menu item on the home screen): validates the envelope (French error if not an Ardoise export), skips malformed entries with a count, ignores ops already present, marks imported ops unsynced so shared groups re-push them (server dedups by opId, so importing is always safe). This makes DEPLOY.md's "re-import by replay" claim real.
+- **Quitter le groupe (cet appareil)** ([LeaveGroupDialog](../frontend-react/src/components/group/LeaveGroupDialog.tsx), `leaveGroup` in engine): device-local removal for SHARED groups only (a local-only group's data exists nowhere else, so its only removal stays the real delete). Warns when unsynced ops would be lost. Re-joining by code restores the group in full. Previously a friend could only declutter by deleting the group for everyone.
+
+**Deliberately NOT built**: automated DB backup (user's 3-2-1 setup covers it); web-push notifications stay skipped for now (asked about, answered: possible on Android + iOS 16.4+ installed PWAs, but needs VAPID keys, a subscription store and a push sender server-side; to revisit only if the user asks).
+
+- *Status*: active. Verified: tsc clean, 117 FE tests (10 new: wipe-heal, rewind-reseed, batching, leaveGroup, import round-trip/rejects/idempotence, todayIso timezone x2), 22 backend tests (2 new: rewind cursor, health 503) via the container, `vite build` emits the SW, `nginx -t` passes. Backend test deps documented in [requirements-dev.txt](../backend/requirements-dev.txt) (pytest was never in the image; the docs claimed a command that could not run as written). Not click-tested in a browser.
+
+### D30 - 2026-07-14 - Web Push notifications (Android, iOS 16.4+ installed, desktop)
+
+User decision: notifications are core to the "feels like a real app" goal, explicitly overriding the Phase 4 "web-push reminders: skipped" call. Not reminders: activity alerts ("Nouvelle depense : Pizza : 18,00 EUR") when someone else changes a shared group.
+
+- **Server** (still holds no folded state; messages are built from op payloads alone):
+  - `push_subscriptions` table (endpoint PK, p256dh/auth keys, device_id, group_ids JSON), migration `a71f3b9d02e4`.
+  - [push_service.py](../backend/app/services/push_service.py): `build_message` (French, per entity/action, batches collapse to "N modifications"), `notify_group` fan-out that SKIPS the author's own device (`device_id == op actor`) and prunes dead subscriptions on 404/410 from the push service. pywebpush imported lazily so old images still boot.
+  - Endpoints under `/push` behind the same X-API-Key gate: `vapid-public-key`, `subscribe` (idempotent upsert by endpoint), `unsubscribe`. All answer 503 when `VAPID_PRIVATE_KEY` is unset (push cleanly disabled; the client hides the menu entry).
+  - The sync push endpoint schedules the fan-out as a FastAPI BackgroundTask (own DB session, never delays sync) and stays silent above `NOTIFY_MAX_BATCH = 50` accepted ops (a self-heal reseed or import replay is not live activity).
+  - Config: `VAPID_PRIVATE_KEY` (raw base64url, generated by the DEPLOY.md one-liner; rotating it invalidates every subscription), `VAPID_SUBJECT`. `pywebpush==2.0.3` pinned.
+- **Client**:
+  - vite-plugin-pwa switched from `generateSW` to `strategies: 'injectManifest'` with a custom [src/sw.ts](../frontend-react/src/sw.ts): identical precache + SPA fallback + SKIP_WAITING prompt flow, plus `push` (always calls showNotification: iOS revokes subscriptions whose pushes stay invisible; `tag` per group collapses piles) and `notificationclick` (opens/focuses the group page). workbox-precaching/-routing added as devDeps.
+  - [lib/push.ts](../frontend-react/src/lib/push.ts): enable/disable (permission request from the menu tap, a user gesture, as iOS requires), subscription POSTed with the device id + shared-group list; `syncPushGroups()` re-sends the list on app start and after share/join/leave. Device-scoped like identity (D23), never in the op log.
+  - [use-push](../frontend-react/src/hooks/use-push.ts) + home menu: "Activer/Desactiver les notifications"; on iOS-in-Safari (no PushManager until installed) the entry becomes "Notifications (installer l'app d'abord)" and opens the install helper. 401 opens the password dialog; 503 explains the server has no key.
+- **Platform truth**: Android/Chromium and desktop full support; iOS 16.4+ only as an installed home-screen app; no support = hidden. The author never gets notified about their own edit.
+- *Status*: active. Verified: 119 FE tests (12 files) incl. base64url decoding, 32 backend tests incl. fan-out/author-exclusion/pruning/silence-above-cap/503-when-disabled, tsc clean, build emits the custom sw.js (injectManifest, 12 precache entries), VAPID generate + derive round-trip proven live in the container. Needs at deploy: image rebuild (pywebpush), `alembic upgrade head`, VAPID key in `.env` (DEPLOY.md section 2). Not click-tested in a browser.

@@ -8,6 +8,7 @@ import { PwaPrompt } from '@/components/layout/PwaPrompt'
 import { ApiKeyDialog } from '@/components/layout/ApiKeyDialog'
 import { useSync } from '@/hooks/use-sync'
 import { AUTH_REQUIRED_EVENT } from '@/lib/auth'
+import { syncPushGroups } from '@/lib/push'
 
 function App() {
   const { online, syncing, pending } = useSync()
@@ -18,6 +19,12 @@ function App() {
     const open = () => setAuthOpen(true)
     window.addEventListener(AUTH_REQUIRED_EVENT, open)
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, open)
+  }, [])
+
+  // Keep the server's notification group list in step with this device
+  // (no-op unless notifications are enabled here).
+  useEffect(() => {
+    void syncPushGroups()
   }, [])
 
   return (

@@ -19,14 +19,15 @@ class SyncService:
         )
         return int(value or 0)
 
-    def push(self, group_id: str, ops: List[OperationWire]) -> Tuple[int, int]:
+    def push(self, group_id: str, ops: List[OperationWire]) -> Tuple[List[OperationWire], int]:
         """
         Store incoming ops idempotently (dedup by op_id). Returns
-        (accepted_count, current_max_cursor). The server never mutates or reorders
-        ops; it only appends new ones.
+        (newly_accepted_ops, current_max_cursor); duplicates are ignored. The
+        accepted list (not just a count) feeds the push-notification fan-out.
+        The server never mutates or reorders ops; it only appends new ones.
         """
         if not ops:
-            return 0, self.max_cursor(group_id)
+            return [], self.max_cursor(group_id)
 
         incoming_ids = [o.op_id for o in ops]
         existing = {
@@ -36,7 +37,7 @@ class SyncService:
             .all()
         }
 
-        accepted = 0
+        accepted: List[OperationWire] = []
         for o in ops:
             if o.op_id in existing:
                 continue
@@ -54,18 +55,23 @@ class SyncService:
                 )
             )
             existing.add(o.op_id)  # guard against duplicates within one request
-            accepted += 1
+            accepted.append(o)
 
         self.db.commit()
         return accepted, self.max_cursor(group_id)
 
     def pull(self, group_id: str, since: int) -> Tuple[List[Operation], int]:
-        """Return ops with seq > since, in seq order, plus the new max cursor."""
+        """
+        Return ops with seq > since, in seq order, plus the group's current max
+        cursor. On an empty result the REAL max is returned (not `since` echoed
+        back): a client whose cursor is ahead of the server (DB restored from an
+        older backup) sees cursor < since and knows to reset and re-sync.
+        """
         rows = (
             self.db.query(Operation)
             .filter(Operation.group_id == group_id, Operation.seq > since)
             .order_by(Operation.seq.asc())
             .all()
         )
-        cursor = rows[-1].seq if rows else since
+        cursor = rows[-1].seq if rows else self.max_cursor(group_id)
         return rows, cursor

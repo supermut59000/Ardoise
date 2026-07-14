@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/compone
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { checkApiKey } from '@/sync/client'
-import { getApiKey, setApiKey } from '@/lib/auth'
+import { getApiKey, notifyAuthSuccess, setApiKey } from '@/lib/auth'
 import { syncAllGroups } from '@/sync/engine'
 
 interface Props {
@@ -40,6 +40,7 @@ export function ApiKeyDialog({ open, onOpenChange }: Props) {
     onOpenChange(false)
     toast.success('Mot de passe enregistre')
     void syncAllGroups() // catch up now that we can authenticate
+    notifyAuthSuccess() // and let the interrupted action (e.g. a join) retry
   }
 
   return (

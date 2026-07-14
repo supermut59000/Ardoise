@@ -36,7 +36,35 @@ The compose file publishes the backend and frontend only on `127.0.0.1`, and doe
 not publish MariaDB at all, so nothing but Caddy reaches the internet even though
 Docker bypasses UFW. Do not add public port publishes.
 
-## 2. Start the stack
+## 2. Enable push notifications (optional but recommended)
+
+Generate a VAPID key pair once (after the first `docker compose build`, which
+installs pywebpush) and add the private key to the same untracked `.env`:
+
+```
+docker compose run --rm --no-deps backend python -c "
+from py_vapid import Vapid02, b64urlencode
+v = Vapid02(); v.generate_keys()
+print('VAPID_PRIVATE_KEY=' + b64urlencode(v.private_key.private_numbers().private_value.to_bytes(32, 'big')))
+"
+```
+
+```
+VAPID_PRIVATE_KEY=<the line printed above>
+VAPID_SUBJECT=mailto:you@example.com
+```
+
+Keep the key stable: rotating it silently invalidates every phone's
+subscription (each user would have to toggle notifications off and on again).
+Leave it empty to run without notifications; everything else still works and
+the app hides the notification menu entry.
+
+Platform reality: Android and desktop browsers work everywhere; iPhones need
+iOS 16.4+ AND the app installed on the home screen (in Safari itself the menu
+shows "installer l'app d'abord"). Users enable notifications from the home
+menu; the author of a change is never notified about their own edit.
+
+## 3. Start the stack
 
 ```
 docker compose up -d --build
@@ -45,7 +73,7 @@ docker compose run --rm --no-deps -v ./backend:/app backend alembic upgrade head
 
 The app is now on `http://localhost:3060` on the server.
 
-## 3. Point Caddy at it
+## 4. Point Caddy at it
 
 Minimal Caddyfile (Caddy handles TLS/Let's Encrypt automatically):
 
@@ -59,7 +87,7 @@ That is all: static files, the manifest, the service worker, and `/api/*` all fl
 through this single upstream. HTTPS is required for the service worker, PWA install,
 and persistent storage, and Caddy provides it.
 
-## 4. First use
+## 5. First use
 
 1. Open `https://ardoise.example.com`, menu -> **Mot de passe du serveur**, enter `API_KEY`.
    It is validated against the server and stored permanently in the browser.
@@ -70,11 +98,19 @@ and persistent storage, and Caddy provides it.
 
 - The password gates **sync only** (`register`/`resolve`/`push`/`pull`). The static app
   still loads without it; you just cannot sync until it is entered. `/health` and
-  `/system/ping` stay open for liveness checks.
+  `/system/ping` stay open for liveness checks (`/health` returns 503 when the DB is down).
 - Changing `API_KEY` later logs everyone out of sync; they re-enter the new one once.
+- **The server is disposable.** If its database is ever wiped or restored from an old
+  backup, the phones detect it and automatically re-register and re-upload the full
+  history (see context/02). The only visible effect of a full wipe is a new share code
+  for each group (shown in Partager); old invite links stop working.
 - Back up the MariaDB volume (`tricount-clone_mariadb-data`) and/or use the in-app
-  JSON export; the JSON export is the full operation log and can be re-imported by replay.
+  JSON export; the JSON export is the full operation log and can be re-imported from
+  the home menu ("Importer un export (JSON)"), which replays it safely (duplicates
+  are ignored, imported changes re-sync to the server).
 - Ports are already loopback-only (see step 1); only Caddy -> frontend is reachable.
+- App updates: after a redeploy, open apps show a "Nouvelle version disponible" toast
+  and reload on tap (never mid-edit); freshly opened apps get the new version directly.
 
 ## Accepted risks (small trusted-friends deployment)
 
