@@ -5,11 +5,13 @@ services:
     # No host port: only the backend reaches MariaDB over the compose network.
     # Docker bypasses UFW when publishing ports, so exposing the DB here would put
     # it on the internet. For local DB access add: ports: ["127.0.0.1:3307:3306"]
+    # Secrets come from an untracked .env next to this file (see DEPLOY.md), so
+    # git pull never conflicts with server-local edits. Defaults suit local dev.
     environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
       MYSQL_DATABASE: ardoise
       MYSQL_USER: ardoise
-      MYSQL_PASSWORD: ardoise
+      MYSQL_PASSWORD: ${DB_PASSWORD:-ardoise}
     volumes:
       - mariadb-data:/var/lib/mysql
     restart: unless-stopped
@@ -37,6 +39,9 @@ services:
       - ./backend:/app
     environment:
       - PYTHONPATH=/app
+      # Overrides the .env.docker defaults; values come from the untracked .env.
+      - API_KEY=${API_KEY:-}
+      - DB_PASSWORD=${DB_PASSWORD:-ardoise}
     restart: unless-stopped
     depends_on:
       mariadb:

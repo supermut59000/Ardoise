@@ -11,13 +11,17 @@ Internet ──HTTPS──► Caddy ──► frontend:3060 ──► nginx ─�
 
 ## 1. Set the shared password and DB secrets
 
-Edit `backend/.env.docker` before starting:
+Create an **untracked** `.env` next to `docker-compose.yml` (never edit the tracked
+files on the server, or `git pull` will conflict):
 
 ```
-DB_PASSWORD=<a-strong-db-password>      # also change it in docker-compose.yml (MYSQL_PASSWORD)
 API_KEY=<a-long-random-string>          # the shared password friends enter once
-DEBUG=false                             # already the default: hides Swagger/OpenAPI in prod
+DB_PASSWORD=<a-strong-db-password>      # used by both MariaDB and the backend
+DB_ROOT_PASSWORD=<another-strong-one>
 ```
+
+`docker compose` reads `.env` automatically and injects these over the tracked
+defaults (`backend/.env.docker` stays pristine dev defaults, `DEBUG=false` included).
 
 Generate a good key, e.g.:
 
