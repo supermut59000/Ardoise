@@ -179,3 +179,10 @@ User feedback: friends found the app visually dead. Expenses now carry an option
 - **UI**: emoji button next to the description field opens [EmojiPickerDialog](../frontend-react/src/components/expense/EmojiPickerDialog.tsx) (search input + grid + "Retirer l'emoji"). Typing a description auto-fills the emoji until the user picks one manually (then suggestions stop for that expense). Expense rows show the emoji in a rounded tile with the payer's avatar as a corner badge; rows without emoji keep the plain avatar.
 - **Note**: the "no emoji as UI icons" rule still holds; these emojis are user content (a category marker on a depense), not interface iconography.
 - *Status*: active. Verified: tsc clean, 98 FE tests (13 new for normalize/search/suggest), build emits SW. Not click-tested in a browser.
+
+### D25 - 2026-07-14 - "Ma part" on the total card, themed Select, LAN-exposed frontend port
+
+- **Ma part**: when the local user has set their identity (D23), the "Total des depenses" card shows a second line with their own share of consumption. New pure helper `memberShareCents(expenses, memberId)` in [domain/balances.ts](../frontend-react/src/domain/balances.ts) (sums computeOwed per expense, so remainder-exact; property test: member shares sum to the group total).
+- **Select component** ([components/ui/select.tsx](../frontend-react/src/components/ui/select.tsx)): shared themed native select replacing the two ad-hoc `<select>`s (payer, "Qui etes-vous ?"). Explicit `bg-background text-foreground` (never the UA default white in dark mode) plus themed `<option>`s where browsers allow; `color-scheme` in index.css still covers OS-rendered popups. User-reported dark-mode fix.
+- **Frontend port binding**: user changed `127.0.0.1:3060:80` to `3060:80` in docker-compose because Caddy runs in a different LXC than the app. Backend (8065) and MariaDB stay loopback/unpublished; the LAN can reach the frontend but sync remains gated by API_KEY. Comment updated to match.
+- *Status*: active. Verified: tsc clean, 103 FE tests, build emits SW. Not click-tested in a browser.

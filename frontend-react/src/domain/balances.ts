@@ -41,6 +41,20 @@ export function computeBalances(
 }
 
 /**
+ * One member's share of consumption across all non-deleted expenses ("Ma part"):
+ * the sum of what the splits attribute to them, regardless of who paid.
+ * Uses the same computeOwed as balances, so it is remainder-exact in cents.
+ */
+export function memberShareCents(expenses: Expense[], memberId: string): number {
+  let total = 0
+  for (const e of expenses) {
+    if (e.deleted) continue
+    total += computeOwed(e.amountCents, e.splitMode, e.shares).get(memberId) ?? 0
+  }
+  return total
+}
+
+/**
  * Member ids that still appear in a non-deleted expense (as payer or participant)
  * or settlement. Removing one of these would orphan the references and leave a
  * nameless ghost in the balances, so the UI blocks it.

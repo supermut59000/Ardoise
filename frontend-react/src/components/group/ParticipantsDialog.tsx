@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { MemberAvatar } from '@/components/ui/member-avatar'
 import { addMember, removeMember, renameMember } from '@/sync/ops'
 import { setMe, useMe } from '@/lib/me'
@@ -143,17 +144,17 @@ export function ParticipantsDialog({ groupId, members, referenced, open, onOpenC
             <label htmlFor="whoami" className="text-sm font-medium">
               Qui etes-vous ?
             </label>
-            <select
+            <Select
               id="whoami"
               value={me ?? ''}
               onChange={(e) => setMe(groupId, e.target.value || null)}
-              className="h-10 w-full cursor-pointer rounded-md border bg-transparent px-3 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              className="h-10 text-sm"
             >
               <option value="">Choisir mon nom...</option>
               {members.map((m) => (
                 <option key={m.id} value={m.id}>{m.name}</option>
               ))}
-            </select>
+            </Select>
             <p className="text-xs text-muted-foreground">
               Preremplit qui a paye et affiche votre solde en haut de l'onglet Soldes.
             </p>

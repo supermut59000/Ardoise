@@ -20,6 +20,7 @@ import { DeleteGroupDialog } from '@/components/group/DeleteGroupDialog'
 import { MemberAvatar } from '@/components/ui/member-avatar'
 import { useGroupData } from '@/hooks/use-group-data'
 import { addExpense, addSettlement, deleteExpense, deleteSettlement } from '@/sync/ops'
+import { memberShareCents } from '@/domain/balances'
 import { exportGroupCsv, exportGroupJson } from '@/lib/export'
 import { formatCents, formatDate, todayIso } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
@@ -172,13 +173,23 @@ export function GroupDetail() {
         </DropdownMenu>
       </header>
 
-      {/* Total spent */}
+      {/* Total spent, plus the local user's own share when identity is set */}
       {expenses.length > 0 && (
-        <Card className="mb-4 flex items-baseline justify-between bg-primary p-4 text-primary-foreground">
-          <span className="text-sm opacity-80">Total des depenses</span>
-          <span className="text-2xl font-semibold tabular-nums">
-            {formatCents(totalCents, currency)}
-          </span>
+        <Card className="mb-4 space-y-1 bg-primary p-4 text-primary-foreground">
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm opacity-80">Total des depenses</span>
+            <span className="text-2xl font-semibold tabular-nums">
+              {formatCents(totalCents, currency)}
+            </span>
+          </div>
+          {me && (
+            <div className="flex items-baseline justify-between border-t border-primary-foreground/20 pt-1">
+              <span className="text-sm opacity-80">Ma part</span>
+              <span className="text-lg font-semibold tabular-nums">
+                {formatCents(memberShareCents(expenses, me), currency)}
+              </span>
+            </div>
+          )}
         </Card>
       )}
 

@@ -61,9 +61,11 @@ services:
       dockerfile: Dockerfile
     container_name: ardoise-frontend
     ports:
-      # Loopback only: Caddy reverse-proxies to 127.0.0.1:3060. Nothing else is
-      # exposed to the internet.
-      - "127.0.0.1:3060:80"
+      # Exposed on the LAN (not loopback): Caddy runs in a different LXC and
+      # proxies to this host's :3060. Docker bypasses UFW here, so anything on
+      # the LAN can reach the frontend; sync stays gated by API_KEY. Keep the
+      # backend and MariaDB unpublished/loopback.
+      - "3060:80"
     depends_on:
       - backend
     restart: unless-stopped

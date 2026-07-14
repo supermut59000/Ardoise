@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBalances } from './balances'
+import { computeBalances, memberShareCents } from './balances'
 import { simplifyDebts } from './simplify-debts'
 import type { Balance, Expense, Member } from './types'
 
@@ -88,6 +88,51 @@ describe('computeBalances', () => {
       }
       expect(sumNet(computeBalances(members, expenses))).toBe(0)
     }
+  })
+})
+
+describe('memberShareCents', () => {
+  it('sums a member share across expenses, regardless of who paid', () => {
+    const expenses = [
+      equalExpense('a', 3000, ['a', 'b', 'c']), // a's share: 1000
+      equalExpense('b', 900, ['a', 'b', 'c']), // a's share: 300
+    ]
+    expect(memberShareCents(expenses, 'a')).toBe(1300)
+  })
+
+  it('returns 0 for a member excluded from every split', () => {
+    expect(memberShareCents([equalExpense('a', 900, ['b', 'c'])], 'a')).toBe(0)
+  })
+
+  it('ignores deleted expenses', () => {
+    const expenses = [
+      equalExpense('a', 1000, ['a', 'b']),
+      equalExpense('a', 5000, ['a', 'b'], { deleted: true }),
+    ]
+    expect(memberShareCents(expenses, 'a')).toBe(500)
+  })
+
+  it('respects non-equal split modes', () => {
+    const exact: Expense = {
+      ...equalExpense('a', 1000, []),
+      splitMode: 'exact',
+      shares: [
+        { memberId: 'a', weight: 250 },
+        { memberId: 'b', weight: 750 },
+      ],
+    }
+    expect(memberShareCents([exact], 'a')).toBe(250)
+    expect(memberShareCents([exact], 'b')).toBe(750)
+  })
+
+  it('member shares across the group sum to the group total', () => {
+    const expenses = [
+      equalExpense('a', 100, ['a', 'b', 'c']), // uneven remainder split
+      equalExpense('b', 999, ['b', 'c']),
+    ]
+    const total = expenses.reduce((s, e) => s + e.amountCents, 0)
+    const shares = ['a', 'b', 'c'].map((id) => memberShareCents(expenses, id))
+    expect(shares.reduce((s, x) => s + x, 0)).toBe(total)
   })
 })
 

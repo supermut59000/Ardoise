@@ -4,6 +4,7 @@ import { ArrowLeft, Trash2, SmilePlus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { useGroupData } from '@/hooks/use-group-data'
 import { addExpense, deleteExpense, updateExpense } from '@/sync/ops'
 import { computeOwed, validateSplit } from '@/domain/split'
@@ -239,16 +240,11 @@ export function ExpenseForm() {
 
         <div className="space-y-1.5">
           <label htmlFor="paidBy" className="text-sm font-medium">Paye par</label>
-          <select
-            id="paidBy"
-            value={paidBy}
-            onChange={(e) => setPaidBy(e.target.value)}
-            className="h-11 w-full rounded-md border bg-transparent px-3 text-base outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-          >
+          <Select id="paidBy" value={paidBy} onChange={(e) => setPaidBy(e.target.value)}>
             {members.map((m) => (
               <option key={m.id} value={m.id}>{m.name}</option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="space-y-1.5">
