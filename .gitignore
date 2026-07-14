@@ -1,0 +1,19 @@
+# Node
+node_modules/
+frontend-react/dist/
+frontend-react/dev-dist/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.db
+
+# Env / secrets
+.env
+backend/.env
+
+# OS
+.DS_Store

@@ -1,0 +1,70 @@
+services:
+  mariadb:
+    image: mariadb:11.2
+    container_name: ardoise-mariadb
+    ports:
+      - "3307:3306"   # 3307 on host to avoid clashing with VroomVroom's 3306
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: ardoise
+      MYSQL_USER: ardoise
+      MYSQL_PASSWORD: ardoise
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    restart: unless-stopped
+    networks:
+      - ardoise-network
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ardoise-backend
+    ports:
+      - "8065:8000"
+    env_file:
+      - ./backend/.env.docker
+    volumes:
+      # Live source mount for dev: with DEBUG=true, run.py runs uvicorn --reload,
+      # so code changes apply without rebuilding the image.
+      - ./backend:/app
+    environment:
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ardoise-network
+
+  frontend:
+    build:
+      context: ./frontend-react
+      dockerfile: Dockerfile
+    container_name: ardoise-frontend
+    ports:
+      - "3060:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - ardoise-network
+
+networks:
+  ardoise-network:
+    driver: bridge
+
+volumes:
+  mariadb-data:
+    driver: local

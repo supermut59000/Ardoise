@@ -1,0 +1,41 @@
+import type { Balance, Expense, Member, Settlement } from './types'
+import { computeOwed } from './split'
+
+/**
+ * Net position per member for a group: what they paid minus what they owe,
+ * adjusted for recorded settlements. Positive = the group owes them; negative =
+ * they owe the group.
+ *
+ * Deleted expenses/members/settlements are ignored. Expenses conserve their
+ * total and settlements move equal-and-opposite amounts, so the sum of all
+ * balances is always exactly zero.
+ */
+export function computeBalances(
+  members: Member[],
+  expenses: Expense[],
+  settlements: Settlement[] = [],
+): Balance[] {
+  const net = new Map<string, number>()
+  for (const m of members) {
+    if (!m.deleted) net.set(m.id, 0)
+  }
+
+  for (const e of expenses) {
+    if (e.deleted) continue
+    net.set(e.paidBy, (net.get(e.paidBy) ?? 0) + e.amountCents)
+    const owed = computeOwed(e.amountCents, e.splitMode, e.shares)
+    for (const [memberId, cents] of owed) {
+      net.set(memberId, (net.get(memberId) ?? 0) - cents)
+    }
+  }
+
+  // A settlement: `from` handed `to` cash, so `from` owes that much less
+  // (net up) and `to` is owed that much less (net down).
+  for (const s of settlements) {
+    if (s.deleted) continue
+    net.set(s.fromMemberId, (net.get(s.fromMemberId) ?? 0) + s.amountCents)
+    net.set(s.toMemberId, (net.get(s.toMemberId) ?? 0) - s.amountCents)
+  }
+
+  return [...net.entries()].map(([memberId, netCents]) => ({ memberId, netCents }))
+}
