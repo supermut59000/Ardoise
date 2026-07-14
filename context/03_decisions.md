@@ -186,3 +186,16 @@ User feedback: friends found the app visually dead. Expenses now carry an option
 - **Select component** ([components/ui/select.tsx](../frontend-react/src/components/ui/select.tsx)): shared themed native select replacing the two ad-hoc `<select>`s (payer, "Qui etes-vous ?"). Explicit `bg-background text-foreground` (never the UA default white in dark mode) plus themed `<option>`s where browsers allow; `color-scheme` in index.css still covers OS-rendered popups. User-reported dark-mode fix.
 - **Frontend port binding**: user changed `127.0.0.1:3060:80` to `3060:80` in docker-compose because Caddy runs in a different LXC than the app. Backend (8065) and MariaDB stay loopback/unpublished; the LAN can reach the frontend but sync remains gated by API_KEY. Comment updated to match.
 - *Status*: active. Verified: tsc clean, 103 FE tests, build emits SW. Not click-tested in a browser.
+
+### D26 - 2026-07-14 - Visual polish pass (senior UI review items 1-8)
+
+Eight look-and-feel changes from a design review, no behaviour change:
+- **Balance bars**: the Soldes tab renders a center-axis bar per member (rose grows left = owes, emerald grows right = is owed), scaled to the group's largest absolute balance. Pure CSS, no lib.
+- **Layered light mode**: `--background` is now a faint indigo-tinted grey (oklch 0.977) with pure white cards on top; `--muted`/`--secondary` deepened slightly to stay visible; segmented-control thumbs switched from bg-background to bg-card so they stay white.
+- **Typeface**: self-hosted **Lexend Variable** via `@fontsource-variable/lexend` (bundled + SW-precached, so offline holds; import must be `/index.css`, the bare specifier has no TS types). System stack kept as fallback.
+- **Hero total card**: brand gradient `from-primary to-[var(--primary-deep)]` (new `--primary-deep` var in both modes), rounded-2xl, colored shadow.
+- **PWA chrome**: `theme-color` now matches the indigo brand (#4d5ce0) with a dark-mode media variant (#0a0a0a); manifest `theme_color` updated. Splash `background_color` untouched.
+- **Home group cards**: 1.5px-wide accent edge colored by `avatarColor(group.id)` (same hash as member avatars) + up to 3 recent distinct expense emojis in the subtitle (`recentEmojis` added to GroupSummary).
+- **Day grouping**: expense list gets section headers via new pure `dayLabel(iso, today)` in [lib/format.ts](../frontend-react/src/lib/format.ts) ("Aujourd'hui", "Hier", "1 juillet", year appended cross-year; unit-tested incl. year boundary). The per-row date was removed as redundant.
+- **Motion**: tab panels animate in (tw-animate-css fade+slide, 300ms); balance bars animate width. Global prefers-reduced-motion kill-switch already covers these.
+- *Status*: active. Verified: tsc clean, 108 FE tests, build emits SW (font precached, 12 entries). Not click-tested in a browser.

@@ -261,7 +261,7 @@ export function ExpenseForm() {
                 type="button"
                 key={m.value}
                 onClick={() => changeMode(m.value)}
-                className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${splitMode === m.value ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+                className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${splitMode === m.value ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
               >
                 {m.label}
               </button>

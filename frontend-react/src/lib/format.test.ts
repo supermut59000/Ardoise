@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseAmountToCents, formatCents } from './format'
+import { dayLabel, parseAmountToCents, formatCents } from './format'
 
 describe('parseAmountToCents', () => {
   it('parses integers and decimals', () => {
@@ -38,5 +38,30 @@ describe('parseAmountToCents', () => {
     const cents = parseAmountToCents('42,00')!
     expect(cents).toBe(4200)
     expect(formatCents(cents)).toContain('42,00')
+  })
+})
+
+describe('dayLabel', () => {
+  const today = '2026-07-14'
+
+  it("labels today and yesterday in words", () => {
+    expect(dayLabel('2026-07-14', today)).toBe("Aujourd'hui")
+    expect(dayLabel('2026-07-13', today)).toBe('Hier')
+  })
+
+  it('labels older same-year dates as day + month', () => {
+    expect(dayLabel('2026-07-01', today)).toBe('1 juillet')
+  })
+
+  it('adds the year for other years', () => {
+    expect(dayLabel('2025-12-31', today)).toBe('31 décembre 2025')
+  })
+
+  it('handles the year boundary for "Hier"', () => {
+    expect(dayLabel('2025-12-31', '2026-01-01')).toBe('Hier')
+  })
+
+  it('falls back to the raw string on invalid input', () => {
+    expect(dayLabel('not-a-date', today)).toBe('not-a-date')
   })
 })

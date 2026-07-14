@@ -7,7 +7,9 @@
   /* Makes native controls (select option lists, date pickers) render light. */
   color-scheme: light;
   --radius: 0.65rem;
-  --background: oklch(1 0 0);
+  /* Page background is a whisper of indigo-tinted grey so white cards read as
+     a layer above it instead of border-only separation. */
+  --background: oklch(0.977 0.004 265);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
@@ -15,10 +17,13 @@
   --popover-foreground: oklch(0.145 0 0);
   /* Ardoise brand: a confident indigo. Green/red stay reserved for balances. */
   --primary: oklch(0.54 0.2 265);
+  /* Deeper stop for brand gradients (total card). */
+  --primary-deep: oklch(0.42 0.19 278);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
+  --secondary: oklch(0.955 0.005 265);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
+  /* Deep enough to stay visible against the tinted page background. */
+  --muted: oklch(0.945 0.006 265);
   --muted-foreground: oklch(0.552 0.02 265);
   --accent: oklch(0.96 0.02 265);
   --accent-foreground: oklch(0.3 0.1 265);
@@ -44,6 +49,7 @@
   --popover-foreground: oklch(0.985 0 0);
   /* Brand indigo, brightened for dark backgrounds. */
   --primary: oklch(0.66 0.18 265);
+  --primary-deep: oklch(0.5 0.17 278);
   --primary-foreground: oklch(0.145 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
@@ -101,7 +107,7 @@
     margin: 0;
     background-color: var(--background);
     color: var(--foreground);
-    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    font-family: "Lexend Variable", system-ui, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
     /* Safe-area padding for iOS standalone PWA */
     padding-top: env(safe-area-inset-top);

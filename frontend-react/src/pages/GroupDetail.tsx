@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Receipt, ArrowRight, Check, Menu, Users, Sun, Moon,
@@ -22,7 +22,7 @@ import { useGroupData } from '@/hooks/use-group-data'
 import { addExpense, addSettlement, deleteExpense, deleteSettlement } from '@/sync/ops'
 import { memberShareCents } from '@/domain/balances'
 import { exportGroupCsv, exportGroupJson } from '@/lib/export'
-import { formatCents, formatDate, todayIso } from '@/lib/format'
+import { dayLabel, formatCents, todayIso } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
 import { useMe } from '@/lib/me'
 import type { Expense, Transfer } from '@/domain/types'
@@ -61,6 +61,8 @@ export function GroupDetail() {
   // In the Soldes tab, mark the local user so they spot their own lines at a glance.
   const label = (id: string) => (id === me ? `${nameOf(id)} (moi)` : nameOf(id))
   const myBalance = me ? balances.find((b) => b.memberId === me) : undefined
+  // Balance bars are scaled to the largest absolute balance in the group.
+  const maxAbsCents = Math.max(1, ...balances.map((b) => Math.abs(b.netCents)))
 
   // Undo re-creates the expense (same content, new id): a delete op is
   // terminal in the fold, so the original id cannot be resurrected.
@@ -175,7 +177,7 @@ export function GroupDetail() {
 
       {/* Total spent, plus the local user's own share when identity is set */}
       {expenses.length > 0 && (
-        <Card className="mb-4 space-y-1 bg-primary p-4 text-primary-foreground">
+        <Card className="mb-4 space-y-1 rounded-2xl border-0 bg-gradient-to-br from-primary to-[var(--primary-deep)] p-4 text-primary-foreground shadow-lg shadow-primary/25">
           <div className="flex items-baseline justify-between">
             <span className="text-sm opacity-80">Total des depenses</span>
             <span className="text-2xl font-semibold tabular-nums">
@@ -224,7 +226,7 @@ export function GroupDetail() {
           role="tab"
           aria-selected={tab === 'expenses'}
           onClick={() => setTab('expenses')}
-          className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'expenses' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+          className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'expenses' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
         >
           Depenses
         </button>
@@ -233,14 +235,14 @@ export function GroupDetail() {
           role="tab"
           aria-selected={tab === 'balances'}
           onClick={() => setTab('balances')}
-          className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'balances' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}
+          className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'balances' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
         >
           Soldes
         </button>
       </div>
 
       {tab === 'expenses' ? (
-        <section className="space-y-2">
+        <section key="expenses" className="space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
           {expenses.length === 0 ? (
             <div className="mt-10 flex flex-col items-center gap-3 text-center">
               <div className="flex size-14 items-center justify-center rounded-2xl bg-accent text-accent-foreground">
@@ -254,41 +256,48 @@ export function GroupDetail() {
             </div>
           ) : (
             <>
-              {expenses.map((e) => (
-                <SwipeableCard
-                  key={e.id}
-                  onSwipeRight={() => navigate(`/g/${groupId}/e/${e.id}`)}
-                  onSwipeLeft={() => handleDelete(e)}
-                >
-                  <button
-                    onClick={() => navigate(`/g/${groupId}/e/${e.id}`)}
-                    className="flex w-full cursor-pointer items-center gap-3 p-3 text-left"
+              {expenses.map((e, i) => (
+                <Fragment key={e.id}>
+                  {/* Day header whenever the date changes (list is newest-first) */}
+                  {(i === 0 || expenses[i - 1].spentAt !== e.spentAt) && (
+                    <h3 className="px-1 pb-0.5 pt-2 text-xs font-medium text-muted-foreground first:pt-0">
+                      {dayLabel(e.spentAt)}
+                    </h3>
+                  )}
+                  <SwipeableCard
+                    onSwipeRight={() => navigate(`/g/${groupId}/e/${e.id}`)}
+                    onSwipeLeft={() => handleDelete(e)}
                   >
-                    {/* Emoji tile with the payer's avatar as a corner badge; plain avatar otherwise */}
-                    {e.emoji ? (
-                      <span className="relative shrink-0">
-                        <span className="flex size-10 items-center justify-center rounded-full bg-accent text-xl">
-                          {e.emoji}
+                    <button
+                      onClick={() => navigate(`/g/${groupId}/e/${e.id}`)}
+                      className="flex w-full cursor-pointer items-center gap-3 p-3 text-left"
+                    >
+                      {/* Emoji tile with the payer's avatar as a corner badge; plain avatar otherwise */}
+                      {e.emoji ? (
+                        <span className="relative shrink-0">
+                          <span className="flex size-10 items-center justify-center rounded-full bg-accent text-xl">
+                            {e.emoji}
+                          </span>
+                          <MemberAvatar
+                            name={nameOf(e.paidBy)}
+                            seed={e.paidBy}
+                            size="xs"
+                            className="absolute -bottom-1 -right-1"
+                          />
                         </span>
-                        <MemberAvatar
-                          name={nameOf(e.paidBy)}
-                          seed={e.paidBy}
-                          size="xs"
-                          className="absolute -bottom-1 -right-1"
-                        />
-                      </span>
-                    ) : (
-                      <MemberAvatar name={nameOf(e.paidBy)} seed={e.paidBy} size="md" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">{e.description || 'Depense'}</p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {nameOf(e.paidBy)} a paye &middot; {formatDate(e.spentAt)}
-                      </p>
-                    </div>
-                    <span className="shrink-0 font-semibold tabular-nums">{formatCents(e.amountCents, currency)}</span>
-                  </button>
-                </SwipeableCard>
+                      ) : (
+                        <MemberAvatar name={nameOf(e.paidBy)} seed={e.paidBy} size="md" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">{e.description || 'Depense'}</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {nameOf(e.paidBy)} a paye
+                        </p>
+                      </div>
+                      <span className="shrink-0 font-semibold tabular-nums">{formatCents(e.amountCents, currency)}</span>
+                    </button>
+                  </SwipeableCard>
+                </Fragment>
               ))}
               <p className="pt-1 text-center text-xs text-muted-foreground sm:hidden">
                 Glissez une depense pour la modifier ou la supprimer.
@@ -297,7 +306,7 @@ export function GroupDetail() {
           )}
         </section>
       ) : (
-        <section className="space-y-4">
+        <section key="balances" className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
           {/* Personal headline: the one number the local user actually cares about */}
           {myBalance && (
             <Card
@@ -319,14 +328,26 @@ export function GroupDetail() {
             </Card>
           )}
 
-          <div className="space-y-1">
+          <div className="space-y-2.5">
             {balances.map((b) => (
-              <div key={b.memberId} className="flex items-center gap-2 px-1 py-1 text-sm">
-                <MemberAvatar name={nameOf(b.memberId)} seed={b.memberId} size="sm" />
-                <span className="min-w-0 flex-1 truncate">{label(b.memberId)}</span>
-                <span className={`shrink-0 font-semibold tabular-nums ${b.netCents > 0 ? 'text-emerald-600 dark:text-emerald-400' : b.netCents < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}`}>
-                  {b.netCents > 0 ? '+' : ''}{formatCents(b.netCents, currency)}
-                </span>
+              <div key={b.memberId} className="px-1">
+                <div className="flex items-center gap-2 text-sm">
+                  <MemberAvatar name={nameOf(b.memberId)} seed={b.memberId} size="sm" />
+                  <span className="min-w-0 flex-1 truncate">{label(b.memberId)}</span>
+                  <span className={`shrink-0 font-semibold tabular-nums ${b.netCents > 0 ? 'text-emerald-600 dark:text-emerald-400' : b.netCents < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}`}>
+                    {b.netCents > 0 ? '+' : ''}{formatCents(b.netCents, currency)}
+                  </span>
+                </div>
+                {/* Center-axis bar: owes grows left in rose, is-owed grows right in emerald */}
+                <div className="relative mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div className="absolute inset-y-0 left-1/2 w-px bg-border" />
+                  {b.netCents !== 0 && (
+                    <div
+                      className={`absolute inset-y-0 rounded-full transition-[width] duration-300 ${b.netCents > 0 ? 'left-1/2 bg-emerald-500' : 'right-1/2 bg-rose-500'}`}
+                      style={{ width: `${(Math.abs(b.netCents) / maxAbsCents) * 50}%` }}
+                    />
+                  )}
+                </div>
               </div>
             ))}
           </div>

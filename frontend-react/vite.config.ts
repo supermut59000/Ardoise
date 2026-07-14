@@ -16,7 +16,7 @@ export default defineConfig({
         name: 'Ardoise',
         short_name: 'Ardoise',
         description: 'Partage de depenses de groupe, hors-ligne et a soi',
-        theme_color: '#0f172a',
+        theme_color: '#4d5ce0',
         background_color: '#0f172a',
         display: 'standalone',
         orientation: 'portrait',

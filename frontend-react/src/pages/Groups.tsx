@@ -18,6 +18,7 @@ import { createGroup } from '@/sync/ops'
 import { joinGroup } from '@/sync/engine'
 import { SyncError } from '@/sync/client'
 import { promptForApiKey } from '@/lib/auth'
+import { avatarColor } from '@/lib/avatar'
 import { exportAllJson } from '@/lib/export'
 import { formatCents } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
@@ -152,13 +153,16 @@ export function Groups() {
         </div>
       ) : (
         <ul className="space-y-2">
-          {groups.map(({ group, members, totalCents, expenseCount }) => (
+          {groups.map(({ group, members, totalCents, expenseCount, recentEmojis }) => (
             <li key={group.id}>
               <Link to={`/g/${group.id}`} className="block">
-                <Card className="flex cursor-pointer items-center gap-3 p-4 transition-colors active:bg-accent">
+                <Card className="relative flex cursor-pointer items-center gap-3 overflow-hidden p-4 pl-5 transition-colors active:bg-accent">
+                  {/* Accent edge in the group's stable colour (same hash as avatars) */}
+                  <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1.5" style={{ backgroundColor: avatarColor(group.id) }} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{group.name}</p>
                     <p className="truncate text-xs text-muted-foreground">
+                      {recentEmojis.length > 0 && <span className="mr-1.5 text-sm">{recentEmojis.join(' ')}</span>}
                       {members.length} participant{members.length > 1 ? 's' : ''}
                       {expenseCount > 0 && ` · ${formatCents(totalCents, group.currency)}`}
                     </p>

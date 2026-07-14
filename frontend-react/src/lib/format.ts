@@ -24,3 +24,18 @@ export function formatDate(iso: string): string {
 export function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
 }
+
+/**
+ * Human day header for list sections: "Aujourd'hui", "Hier", otherwise
+ * "13 juillet" (with the year when it is not the current one).
+ */
+export function dayLabel(iso: string, today: string = todayIso()): string {
+  if (iso === today) return "Aujourd'hui"
+  const d = new Date(iso + 'T00:00:00')
+  const t = new Date(today + 'T00:00:00')
+  if (Number.isNaN(d.getTime()) || Number.isNaN(t.getTime())) return iso
+  if (Math.round((t.getTime() - d.getTime()) / 86_400_000) === 1) return 'Hier'
+  const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long' }
+  if (d.getFullYear() !== t.getFullYear()) opts.year = 'numeric'
+  return new Intl.DateTimeFormat('fr-FR', opts).format(d)
+}

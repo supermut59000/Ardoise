@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { ThemeProvider } from 'next-themes'
+// Self-hosted variable font: bundled by Vite, precached by the SW, works offline.
+import '@fontsource-variable/lexend/index.css'
 import './index.css'
 import App from './App.tsx'
 import { ThemedToaster } from '@/components/ui/sonner'
