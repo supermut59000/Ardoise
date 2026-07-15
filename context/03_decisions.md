@@ -273,3 +273,11 @@ User asked three ops questions: Postgres for a slimmer footprint, where the capa
 - **Database: stay on MariaDB.** Measured idle RSS: defaults 201 MB, tuned (`--innodb-buffer-pool-size=64M --performance-schema=OFF --max-connections=40`) 78 MB, which is Postgres-class. A Postgres migration would buy ~nothing, cost a migration, and break the VroomVroom stack symmetry (D2). Slimming = add the command flags to the mariadb service in docker-compose (left for the user to apply).
 - **Hardening**: new "Hardening for internet exposure" section in DEPLOY.md, ordered by value: Caddy security headers + 12 MB body cap, keeping images/proxy current (the realistic threat is a stale CVE, not the key), CrowdSec/fail2ban on 401 spam (stock Caddy has no rate limiter), single WAN entry via Caddy only, and the stronger-than-shared-key options (Cloudflare Access / VPN / SSO) with their friend-UX costs. Restated the boundary: without the key an attacker reaches only static files, /health, /system/ping and 401s.
 - *Status*: active. Docs only, no code change.
+
+### D33 - 2026-07-15 - MariaDB tuning applied; hardening docs matched to the real Caddy setup
+
+Follow-up to D32 after the user shared his homelab's shared Caddy `(security_headers)` snippet:
+- **MariaDB tuning applied** (by the user) as the `command:` on the mariadb service in docker-compose (`--innodb-buffer-pool-size=64M --performance-schema=OFF --max-connections=40`). Verified through the compose healthcheck: healthy at 77 MB idle (was 201 MB on defaults). Postgres migration definitively off the table.
+- **DEPLOY.md hardening step 1 rewritten** to import the existing shared snippet instead of duplicating headers, plus the Ardoise-only `request_body max_size 12MB`. Noted that the snippet's `X-XSS-Protection` is a legacy header OWASP now recommends dropping (browser auditor removed; old implementations enabled XS-Leaks); harmless for Ardoise either way. Ardoise needs none of the camera/geolocation permissions the snippet leaves at default for the other apps.
+- **CrowdSec steps made concrete** in DEPLOY.md step 3: per-site JSON access log, `crowdsecurity/caddy` collection, firewall bouncer.
+- *Status*: active.

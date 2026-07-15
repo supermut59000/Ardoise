@@ -63,9 +63,10 @@ Conclusion: instant for decades of normal use. If a group ever crosses
 | MariaDB tuned (`--innodb-buffer-pool-size=64M --performance-schema=OFF --max-connections=40`) | 78 MB |
 
 The tuned figure is Postgres-class, so migrating engines buys nothing here
-(see D32): to slim the homelab, add the flags above as a `command:` on the
-mariadb service in docker-compose. 64M of buffer pool comfortably holds years
-of ops (see storage table). Backend + frontend containers are ~100 MB together.
+(see D32). The flags are APPLIED as the mariadb `command:` in docker-compose
+since 2026-07-15 (verified healthy at 77 MB through the compose healthcheck).
+64M of buffer pool comfortably holds years of ops (see storage table).
+Backend + frontend containers are ~100 MB together.
 
 ## Append-only consequences (know these)
 

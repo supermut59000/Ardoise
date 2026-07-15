@@ -120,23 +120,26 @@ The realistic threats are elsewhere: software vulnerabilities in the exposed
 stack (Caddy, nginx, FastAPI) and noise/abuse against the open endpoints. The
 layers below are ordered by value; the first three cost minutes.
 
-**1. Caddy headers + body cap** (in the Ardoise site block):
+**1. Caddy headers + body cap.** The homelab already has a shared
+`(security_headers)` snippet (HSTS+preload, nosniff, SAMEORIGIN, referrer
+policy, Permissions-Policy, banner stripping): import it and add the Ardoise
+body cap per site:
 
 ```caddy
 ardoise.example.com {
-    reverse_proxy localhost:3060
-    header {
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-        Referrer-Policy no-referrer
-        -Server
-    }
+    import security_headers
     request_body {
         max_size 12MB
     }
+    reverse_proxy <app-lxc-ip>:3060
 }
 ```
+
+Ardoise needs none of the sensor/camera/geolocation permissions, so the shared
+snippet's Permissions-Policy is fine as is. One note on that snippet:
+`X-XSS-Protection` is a legacy header; the browser XSS auditor it controlled
+was removed years ago, and OWASP now recommends dropping it (or `"0"`) because
+old implementations enabled cross-site leaks. Harmless for Ardoise either way.
 
 **2. Keep the software current.** The most likely real-world compromise is a
 known CVE in an outdated image or proxy. Monthly: `git pull`,
@@ -145,8 +148,12 @@ in its LXC. This matters more than any header.
 
 **3. Rate limiting / ban on 401 spam.** Stock Caddy has no rate limiter, so
 either build it with the `mholt/caddy-ratelimit` plugin (xcaddy), or better on
-a homelab: run CrowdSec (or fail2ban) reading Caddy's access log and ban IPs
-that stack up 401/404s. This turns key-guessing noise into silence.
+a homelab: CrowdSec in the Caddy LXC. Concretely: give the site a JSON access
+log (`log { output file /var/log/caddy/ardoise.log format json }`), install
+`crowdsec` + the `caddy` collection (`cscli collections install
+crowdsecurity/caddy`), point an acquisition at that log file, and add the
+`crowdsec-firewall-bouncer` so offending IPs get dropped at the firewall.
+This turns key-guessing and scanner noise into bans.
 
 **4. Only expose what friends need.** Caddy should be the single WAN entry.
 The compose file already keeps backend and MariaDB off the network; the

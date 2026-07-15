@@ -12,6 +12,7 @@ services:
       MYSQL_DATABASE: ardoise
       MYSQL_USER: ardoise
       MYSQL_PASSWORD: ${DB_PASSWORD:-ardoise}
+    command: --innodb-buffer-pool-size=64M --performance-schema=OFF --max-connections=40
     volumes:
       - mariadb-data:/var/lib/mysql
     restart: unless-stopped
