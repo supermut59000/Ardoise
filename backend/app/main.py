@@ -34,12 +34,17 @@ def root():
 
 @app.get("/health")
 def health_check():
+    db = None
     try:
         db = SessionLocal()
         db.execute(text("SELECT 1"))
-        db.close()
         return {"status": "healthy"}
     except Exception:
         # 503, not 200: the Docker healthcheck and any monitor must see a DB
         # outage as unhealthy, not a green "unhealthy" body.
         return JSONResponse(status_code=503, content={"status": "unhealthy", "db": "unreachable"})
+    finally:
+        # Close even when execute() throws, or each probe during an outage
+        # leaks a session.
+        if db is not None:
+            db.close()

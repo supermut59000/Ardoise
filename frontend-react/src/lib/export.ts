@@ -8,15 +8,24 @@ import { todayIso } from './format'
 
 // ---- Pure builders (unit-tested) ----
 
-/** Full JSON export: the raw operation log is the real 'own your data' artifact. */
-export function buildJsonExport(groupName: string, ops: Operation[]): string {
+/** Which groups were shared, so a restore on a fresh device can re-link sync
+ *  instead of silently importing them as local-only. */
+export interface SharedRef {
+  groupId: string
+  shareCode: string
+}
+
+/** Full JSON export: the raw operation log is the real 'own your data' artifact.
+ *  v2 adds `shared` (the share codes of synced groups); v1 files import fine. */
+export function buildJsonExport(groupName: string, ops: Operation[], shared: SharedRef[] = []): string {
   return JSON.stringify(
     {
       app: 'ardoise',
-      version: 1,
+      version: 2,
       group: groupName,
       exportedAt: new Date().toISOString(),
       operationCount: ops.length,
+      shared,
       operations: ops,
     },
     null,
@@ -50,14 +59,14 @@ function isValidOp(o: unknown): o is Operation {
  * UI can report the count). Imported ops are marked unsynced so a shared group
  * re-pushes them (the server dedups by opId, so re-importing is always safe).
  */
-export function parseJsonExport(text: string): { ops: Operation[]; invalid: number } {
+export function parseJsonExport(text: string): { ops: Operation[]; invalid: number; shared: SharedRef[] } {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
     throw new Error("Ce fichier n'est pas un export Ardoise valide")
   }
-  const envelope = parsed as { app?: unknown; operations?: unknown }
+  const envelope = parsed as { app?: unknown; operations?: unknown; shared?: unknown }
   if (envelope?.app !== 'ardoise' || !Array.isArray(envelope.operations)) {
     throw new Error("Ce fichier n'est pas un export Ardoise valide")
   }
@@ -67,22 +76,38 @@ export function parseJsonExport(text: string): { ops: Operation[]; invalid: numb
     if (isValidOp(raw)) ops.push({ ...raw, synced: 0 })
     else invalid++
   }
-  return { ops, invalid }
+  // v1 exports have no `shared`; malformed entries are dropped silently (the
+  // ops still import, only the sync re-link is skipped for that group).
+  const shared: SharedRef[] = Array.isArray(envelope.shared)
+    ? (envelope.shared as unknown[]).filter(
+        (s): s is SharedRef =>
+          typeof s === 'object' && s !== null &&
+          typeof (s as SharedRef).groupId === 'string' && (s as SharedRef).groupId.length > 0 &&
+          typeof (s as SharedRef).shareCode === 'string' && (s as SharedRef).shareCode.length > 0,
+      )
+    : []
+  return { ops, invalid, shared }
 }
 
 export interface ImportResult {
   imported: number // new ops folded in
   existing: number // ops already on this device (untouched)
   invalid: number // malformed entries skipped
+  relinked: number // shared groups whose sync was re-activated from the export
 }
 
 /**
  * Replay an export file into the local log. Idempotent: ops already present are
  * left untouched (their synced flag included). New ops arrive unsynced, so the
  * sync engine re-pushes them to the server for any shared group.
+ *
+ * Groups the export marks as shared get their syncState re-created (cursor 0),
+ * so restoring on a fresh device re-links sync instead of leaving the group
+ * silently local-only. Existing syncState rows are never touched, and the
+ * self-heal path covers a stale share code (the server re-registers by id).
  */
 export async function importJsonExport(text: string, database: ArdoiseDB = db): Promise<ImportResult> {
-  const { ops, invalid } = parseJsonExport(text)
+  const { ops, invalid, shared } = parseJsonExport(text)
   const ids = ops.map((o) => o.opId)
   const existingIds = new Set(
     (await database.operations.where('opId').anyOf(ids).primaryKeys()) as string[],
@@ -90,9 +115,18 @@ export async function importJsonExport(text: string, database: ArdoiseDB = db): 
   const fresh = ops.filter((o) => !existingIds.has(o.opId))
   if (fresh.length > 0) {
     await ingestOps(database, fresh)
-    emitLocalChange() // let the sync engine push them promptly
   }
-  return { imported: fresh.length, existing: existingIds.size, invalid }
+  let relinked = 0
+  for (const ref of shared) {
+    if (!(await database.syncState.get(ref.groupId))) {
+      await database.syncState.put({ groupId: ref.groupId, cursor: 0, shareCode: ref.shareCode })
+      relinked++
+    }
+  }
+  if (fresh.length > 0 || relinked > 0) {
+    emitLocalChange() // let the sync engine push/pull promptly
+  }
+  return { imported: fresh.length, existing: existingIds.size, invalid, relinked }
 }
 
 function csvField(value: string): string {
@@ -109,7 +143,9 @@ const amount = (cents: number) => (cents / 100).toFixed(2).replace('.', ',')
  * "Repartition" column lists each participant's owed share.
  */
 export function buildCsvExport(members: Member[], expenses: Expense[]): string {
-  const name = (id: string) => members.find((m) => m.id === id)?.name ?? '?'
+  // Same graceful fallback as the UI (D22): a member removed on another device
+  // can still be referenced by an expense; never print a bare "?".
+  const name = (id: string) => members.find((m) => m.id === id)?.name ?? 'Ancien participant'
   const header = ['Date', 'Description', 'Montant', 'Paye par', 'Repartition']
 
   const rows = expenses.map((e) => {
@@ -143,12 +179,15 @@ export async function exportGroupJson(groupId: string): Promise<void> {
   const ops = await db.operations.where('groupId').equals(groupId).toArray()
   const state = foldOps(ops)
   const groupName = state.groups[groupId]?.name ?? 'groupe'
-  download(`ardoise-${slug(groupName)}-${today()}.json`, 'application/json', buildJsonExport(groupName, ops))
+  const sync = await db.syncState.get(groupId)
+  const shared = sync ? [{ groupId, shareCode: sync.shareCode }] : []
+  download(`ardoise-${slug(groupName)}-${today()}.json`, 'application/json', buildJsonExport(groupName, ops, shared))
 }
 
 export async function exportAllJson(): Promise<void> {
   const ops = await db.operations.toArray()
-  download(`ardoise-tout-${today()}.json`, 'application/json', buildJsonExport('tout', ops))
+  const shared = (await db.syncState.toArray()).map((s) => ({ groupId: s.groupId, shareCode: s.shareCode }))
+  download(`ardoise-tout-${today()}.json`, 'application/json', buildJsonExport('tout', ops, shared))
 }
 
 export async function exportGroupCsv(groupId: string): Promise<void> {

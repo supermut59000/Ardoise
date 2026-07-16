@@ -32,9 +32,11 @@ openssl rand -base64 32
 Leave `API_KEY` empty only for local development (auth disabled). Keep `DEBUG=false`
 in production (it gates `/docs`, `/api/v1/openapi.json`, SQL echo, and reload).
 
-The compose file publishes the backend and frontend only on `127.0.0.1`, and does
-not publish MariaDB at all, so nothing but Caddy reaches the internet even though
-Docker bypasses UFW. Do not add public port publishes.
+The compose file publishes the backend only on `127.0.0.1` and does not publish
+MariaDB at all. The frontend is published on the LAN (`3060:80`) because Caddy
+runs in a different LXC and proxies to this host's :3060 (see D25); sync stays
+gated by `API_KEY`. Docker bypasses UFW, so never port-forward 3060 to the WAN
+and do not add other public port publishes.
 
 ## 2. Enable push notifications (optional but recommended)
 
@@ -108,7 +110,8 @@ and persistent storage, and Caddy provides it.
   JSON export; the JSON export is the full operation log and can be re-imported from
   the home menu ("Importer un export (JSON)"), which replays it safely (duplicates
   are ignored, imported changes re-sync to the server).
-- Ports are already loopback-only (see step 1); only Caddy -> frontend is reachable.
+- Ports (see step 1): backend loopback-only, MariaDB unpublished, frontend on the
+  LAN for the Caddy LXC. Only Caddy should be reachable from the WAN.
 - App updates: after a redeploy, open apps show a "Nouvelle version disponible" toast
   and reload on tap (never mid-edit); freshly opened apps get the new version directly.
 

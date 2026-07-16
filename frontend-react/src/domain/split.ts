@@ -109,7 +109,10 @@ export function validateSplit(
       return 'La somme des montants doit egaler le total de la depense'
     }
   } else if (mode === 'percent') {
-    if (sum !== 100) return 'Les pourcentages doivent totaliser 100'
+    // Decimal percentages are allowed (33,33 / 33,33 / 33,34): compare at
+    // two-decimal precision, because 33.33 + 33.33 + 33.34 !== 100 in floating
+    // point even though the user typed exactly 100.
+    if (Math.round(sum * 100) !== 100_00) return 'Les pourcentages doivent totaliser 100'
   } else if (mode === 'shares') {
     if (shares.every((s) => s.weight <= 0)) return 'Au moins une part doit etre positive'
   }

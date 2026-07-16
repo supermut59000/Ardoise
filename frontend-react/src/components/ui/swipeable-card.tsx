@@ -63,18 +63,29 @@ export function SwipeableCard({
     }
   }
 
-  function handleTouchEnd() {
-    const offset = currentOffset.current
-
-    if (offset > THRESHOLD && onSwipeRight) onSwipeRight()
-    if (offset < -THRESHOLD && onSwipeLeft) onSwipeLeft()
-
+  function springBack() {
     if (foregroundRef.current) {
       foregroundRef.current.style.transition = 'transform 200ms ease-out'
       foregroundRef.current.style.transform = 'translateX(0)'
     }
     currentOffset.current = 0
     locked.current = null
+  }
+
+  function handleTouchEnd() {
+    const offset = currentOffset.current
+
+    if (offset > THRESHOLD && onSwipeRight) onSwipeRight()
+    if (offset < -THRESHOLD && onSwipeLeft) onSwipeLeft()
+
+    springBack()
+  }
+
+  // A cancelled touch (incoming call, system gesture) fires touchcancel, not
+  // touchend: spring back WITHOUT firing the actions, or the card stays stuck
+  // half-swiped (and a past-threshold cancel must never delete).
+  function handleTouchCancel() {
+    springBack()
   }
 
   return (
@@ -96,6 +107,7 @@ export function SwipeableCard({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchCancel}
         className="relative z-10 bg-card"
       >
         {children}

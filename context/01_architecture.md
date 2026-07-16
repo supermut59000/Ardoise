@@ -11,7 +11,7 @@
 
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend | React 19 + TS + Vite + Tailwind v4 + shadcn/ui + TanStack Query | Same as VroomVroom |
+| Frontend | React 19 + TS + Vite + Tailwind v4 + shadcn/ui + dexie-react-hooks | Same as VroomVroom, minus TanStack Query: data is local-first, Dexie live queries cover it |
 | Local store | **Dexie.js** (IndexedDB) | Offline source of truth: holds folded state cache + op log |
 | PWA / SW | **vite-plugin-pwa** (Workbox) | Replaces hand-rolled sw.js: precache, update flow, Background Sync where supported |
 | Backend | FastAPI + SQLAlchemy 2.0 + Pydantic 2 + Alembic | Same as VroomVroom |

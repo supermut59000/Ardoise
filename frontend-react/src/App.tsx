@@ -6,6 +6,7 @@ import { ExpenseForm } from '@/pages/ExpenseForm'
 import { SyncBar } from '@/components/layout/SyncBar'
 import { PwaPrompt } from '@/components/layout/PwaPrompt'
 import { ApiKeyDialog } from '@/components/layout/ApiKeyDialog'
+import { ErrorBoundary } from '@/components/layout/ErrorBoundary'
 import { useSync } from '@/hooks/use-sync'
 import { AUTH_REQUIRED_EVENT } from '@/lib/auth'
 import { syncPushGroups } from '@/lib/push'
@@ -31,13 +32,16 @@ function App() {
     <>
       <PwaPrompt />
       <SyncBar online={online} syncing={syncing} pending={pending} />
-      <Routes>
-        <Route path="/" element={<Groups />} />
-        <Route path="/g/:groupId" element={<GroupDetail />} />
-        <Route path="/g/:groupId/add" element={<ExpenseForm />} />
-        <Route path="/g/:groupId/e/:expenseId" element={<ExpenseForm />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      {/* A page crash degrades to a French fallback + reload, never a white screen. */}
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/" element={<Groups />} />
+          <Route path="/g/:groupId" element={<GroupDetail />} />
+          <Route path="/g/:groupId/add" element={<ExpenseForm />} />
+          <Route path="/g/:groupId/e/:expenseId" element={<ExpenseForm />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </ErrorBoundary>
       <ApiKeyDialog open={authOpen} onOpenChange={setAuthOpen} />
     </>
   )

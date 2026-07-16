@@ -78,7 +78,8 @@ export function ExpenseForm() {
       setIncluded(new Set(existing.shares.map((s) => s.memberId)))
       const r: Record<string, string> = {}
       for (const s of existing.shares) {
-        r[s.memberId] = mode === 'exact' ? centsToInput(s.weight) : String(s.weight)
+        // Weights may be decimal since the un-floor fix; show them French-style.
+        r[s.memberId] = mode === 'exact' ? centsToInput(s.weight) : String(s.weight).replace('.', ',')
       }
       setRaw(r)
     } else {
@@ -126,10 +127,14 @@ export function ExpenseForm() {
     const out: ExpenseShare[] = []
     for (const m of members) {
       const text = raw[m.id] ?? ''
+      // Decimal weights are honored as typed (1,5 parts; 33,33 %): flooring
+      // them silently made "33,33 / 33,33 / 33,34" fail validation while the
+      // user was looking at numbers that total 100. splitCents is proportional,
+      // so fractional weights split correctly and still conserve the total.
       const weight =
         splitMode === 'exact'
           ? (parseAmountToCents(text) ?? 0)
-          : Math.floor(Number(text.replace(',', '.')) || 0)
+          : Number(text.replace(',', '.')) || 0
       if (weight > 0) out.push({ memberId: m.id, weight })
     }
     return out

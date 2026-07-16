@@ -110,6 +110,48 @@ class TestPushPull:
         assert body["cursor"] == max_cursor  # real max, NOT since echoed back
 
 
+class TestWireValidation:
+    """
+    A malformed op must be a clean 422, never a MariaDB error 500: the columns
+    are String(36)/String(64) and strict mode would reject over-length values
+    only at commit time, turning one bad op into an opaque, endlessly-retried
+    server error.
+    """
+
+    def test_push_rejects_unknown_entity(self, client):
+        register(client)
+        bad = make_op("o1", "g1", 1, entity="vehicle")
+        r = client.post("/api/v1/groups/g1/ops", json={"ops": [bad]})
+        assert r.status_code == 422
+
+    def test_push_rejects_unknown_action(self, client):
+        register(client)
+        bad = make_op("o1", "g1", 1, action="upsert")
+        r = client.post("/api/v1/groups/g1/ops", json={"ops": [bad]})
+        assert r.status_code == 422
+
+    def test_push_rejects_overlong_op_id(self, client):
+        register(client)
+        bad = make_op("x" * 37, "g1", 1)
+        r = client.post("/api/v1/groups/g1/ops", json={"ops": [bad]})
+        assert r.status_code == 422
+
+    def test_push_rejects_overlong_actor(self, client):
+        register(client)
+        bad = make_op("o1", "g1", 1, actor="a" * 65)
+        r = client.post("/api/v1/groups/g1/ops", json={"ops": [bad]})
+        assert r.status_code == 422
+
+    def test_valid_op_still_accepted(self, client):
+        # The constraints must not reject what the real client sends (36-char
+        # UUID ids, the four entities, the three actions).
+        register(client)
+        ok = make_op("123e4567-e89b-42d3-a456-426614174000", "g1", 1)
+        r = client.post("/api/v1/groups/g1/ops", json={"ops": [ok]})
+        assert r.status_code == 200
+        assert r.json()["accepted"] == 1
+
+
 class TestHealth:
     def test_health_returns_503_when_db_unreachable(self, client, monkeypatch):
         """Docker's healthcheck only reads the status code, so a DB outage must

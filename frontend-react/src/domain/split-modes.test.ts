@@ -38,6 +38,29 @@ describe('computeOwed', () => {
     expect(r.get('b')).toBe(300)
     expect(sum(r)).toBe(1000)
   })
+
+  it('decimal percent split (20,5 / 79,5) is honored, not floored', () => {
+    // Discriminates against the old Math.floor path: 20/79 would neither
+    // validate nor produce 205/795.
+    const r = computeOwed(1000, 'percent', shares([['a', 20.5], ['b', 79.5]]))
+    expect(r.get('a')).toBe(205)
+    expect(r.get('b')).toBe(795)
+    expect(sum(r)).toBe(1000)
+  })
+
+  it('decimal percent thirds (33,33 x2 + 33,34) conserve the total', () => {
+    const r = computeOwed(3000, 'percent', shares([['a', 33.33], ['b', 33.33], ['c', 33.34]]))
+    expect(sum(r)).toBe(3000)
+  })
+
+  it('decimal shares split (1,5 vs 1) splits 3:2, not 1:1', () => {
+    // Discriminates against the old Math.floor behavior, which turned 1.5 into
+    // 1 and produced a 500/500 split instead of 600/400.
+    const r = computeOwed(1000, 'shares', shares([['a', 1.5], ['b', 1]]))
+    expect(r.get('a')).toBe(600)
+    expect(r.get('b')).toBe(400)
+    expect(sum(r)).toBe(1000)
+  })
 })
 
 describe('validateSplit', () => {
@@ -58,6 +81,14 @@ describe('validateSplit', () => {
   it('percent must total 100', () => {
     expect(validateSplit('percent', 1000, shares([['a', 60], ['b', 40]]))).toBeNull()
     expect(validateSplit('percent', 1000, shares([['a', 60], ['b', 30]]))).not.toBeNull()
+  })
+
+  it('decimal percents totalling 100 are accepted despite float error', () => {
+    // 33.33 + 33.33 + 33.34 !== 100 in IEEE floats; the strict !== 100 check
+    // used to reject what the user correctly typed.
+    expect(validateSplit('percent', 1000, shares([['a', 33.33], ['b', 33.33], ['c', 33.34]]))).toBeNull()
+    // A real off-by-a-tenth still fails.
+    expect(validateSplit('percent', 1000, shares([['a', 33.33], ['b', 33.33], ['c', 33.24]]))).not.toBeNull()
   })
 
   it('shares needs at least one positive part', () => {

@@ -69,7 +69,11 @@ export function Groups() {
         setJoinCode(trimmed)
         promptForApiKey()
       } else {
-        toast.error('Code invalide ou serveur injoignable')
+        // Keep the code in the input on ANY failure: an invite link opened
+        // while the server is unreachable already stripped ?join= from the
+        // URL, and the friend has no other copy of the code.
+        setJoinCode(trimmed)
+        toast.error('Code invalide ou serveur injoignable. Le code reste saisi, reessayez.')
       }
     } finally {
       setJoining(false)
@@ -109,6 +113,10 @@ export function Groups() {
         toast.success(`${result.imported} operation${result.imported > 1 ? 's' : ''} importee${result.imported > 1 ? 's' : ''}`)
       } else {
         toast.info('Rien de nouveau dans ce fichier, tout etait deja present.')
+      }
+      if (result.relinked > 0) {
+        toast.success(`Synchronisation reactivee pour ${result.relinked} groupe${result.relinked > 1 ? 's' : ''}`)
+        void syncPushGroups() // follow the restored groups' notifications too
       }
       if (result.invalid > 0) toast.warning(`${result.invalid} entree(s) illisible(s) ignoree(s)`)
     } catch (e) {

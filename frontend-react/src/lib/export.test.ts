@@ -70,6 +70,15 @@ describe('parseJsonExport', () => {
     expect(ops.map((o) => o.opId)).toEqual(['ok'])
     expect(invalid).toBe(3)
   })
+
+  it('extracts valid shared refs and drops malformed ones', () => {
+    const text = JSON.stringify({
+      app: 'ardoise',
+      operations: [],
+      shared: [{ groupId: 'g', shareCode: 'ABCD2345' }, { groupId: '' }, 'junk', { groupId: 'x' }],
+    })
+    expect(parseJsonExport(text).shared).toEqual([{ groupId: 'g', shareCode: 'ABCD2345' }])
+  })
 })
 
 describe('importJsonExport', () => {
@@ -79,13 +88,41 @@ describe('importJsonExport', () => {
     const text = buildJsonExport('Trip', [wireOp('i1'), wireOp('i2')])
 
     const first = await importJsonExport(text, d)
-    expect(first).toEqual({ imported: 2, existing: 0, invalid: 0 })
+    expect(first).toEqual({ imported: 2, existing: 0, invalid: 0, relinked: 0 })
     // stored unsynced so a shared group re-pushes them (server dedups by opId)
     expect((await d.operations.toArray()).every((o) => o.synced === 0)).toBe(true)
 
     const second = await importJsonExport(text, d)
-    expect(second).toEqual({ imported: 0, existing: 2, invalid: 0 })
+    expect(second).toEqual({ imported: 0, existing: 2, invalid: 0, relinked: 0 })
     expect(await d.operations.count()).toBe(2)
+  })
+
+  it('restores sync for groups the export marks as shared (fresh-device restore)', async () => {
+    // The regression this guards: importing a backup on a new phone used to
+    // leave a previously-shared group silently local-only (no syncState row),
+    // so it never synced again until the user re-shared by hand.
+    const d = new ArdoiseDB('export-relink-test')
+    await d.open()
+    const text = buildJsonExport('Trip', [wireOp('r1')], [{ groupId: 'g', shareCode: 'ABCD2345' }])
+
+    const result = await importJsonExport(text, d)
+    expect(result.relinked).toBe(1)
+    expect(await d.syncState.get('g')).toEqual({ groupId: 'g', cursor: 0, shareCode: 'ABCD2345' })
+
+    // Idempotent: a second import never touches the existing row.
+    await d.syncState.put({ groupId: 'g', cursor: 42, shareCode: 'ABCD2345' })
+    const again = await importJsonExport(text, d)
+    expect(again.relinked).toBe(0)
+    expect((await d.syncState.get('g'))?.cursor).toBe(42)
+  })
+
+  it('accepts a v1 export without the shared field (no relink, ops import)', async () => {
+    const d = new ArdoiseDB('export-v1-test')
+    await d.open()
+    const v1 = JSON.stringify({ app: 'ardoise', version: 1, operations: [wireOp('v1op')] })
+    const result = await importJsonExport(v1, d)
+    expect(result).toEqual({ imported: 1, existing: 0, invalid: 0, relinked: 0 })
+    expect(await d.syncState.count()).toBe(0)
   })
 })
 
@@ -111,5 +148,15 @@ describe('buildCsvExport', () => {
     )
     expect(csv).toContain('Alice: 20,00')
     expect(csv).toContain('Bob: 10,00')
+  })
+
+  it('names a removed-but-referenced member like the UI, never "?"', () => {
+    // Concurrent-edit scenario: Bob was deleted on another device while this
+    // one added an expense he paid. The UI shows "Ancien participant" (D22);
+    // the CSV twin had kept the old "?".
+    const onlyAlice = members.filter((m) => m.id === 'a')
+    const csv = buildCsvExport(onlyAlice, [expense({ paidBy: 'b' })])
+    expect(csv).toContain('Ancien participant')
+    expect(csv).not.toContain('?')
   })
 })
