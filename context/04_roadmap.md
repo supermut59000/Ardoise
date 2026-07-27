@@ -1,6 +1,6 @@
 # 04 - Roadmap and build status
 
-Each phase is independently usable. Current status: **Phase 4 complete + audit/UX passes D22-D35, deployed on the homelab** (2026-07-16). Next: feedback from real use with friends (user will direct).
+Each phase is independently usable. Current status: **Phase 4 complete + audit/UX passes D22-D36, deployed on the homelab** (2026-07-16). Next: feedback from real use with friends (user will direct).
 
 ## Phase 0 - Scaffold (done 2026-07-13)
 

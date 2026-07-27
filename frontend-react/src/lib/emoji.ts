@@ -2,6 +2,9 @@
  * Curated emoji catalogue for expenses, with French keywords and a small fuzzy
  * search. The emoji is user content (a category marker on a depense), not UI
  * iconography, so it syncs like any other expense field.
+ *
+ * Known brands get their own logo on top of this (see brands.ts, D36); the
+ * emoji stays as the fallback and is what generic descriptions land on.
  */
 export interface EmojiEntry {
   emoji: string

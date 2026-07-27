@@ -29,6 +29,7 @@ export function SwipeableCard({
   className,
 }: SwipeableCardProps) {
   const foregroundRef = useRef<HTMLDivElement>(null)
+  const actionsRef = useRef<HTMLDivElement>(null)
   const startX = useRef(0)
   const startY = useRef(0)
   const currentOffset = useRef(0)
@@ -55,6 +56,9 @@ export function SwipeableCard({
     if (locked.current !== 'horizontal') return
 
     e.preventDefault()
+    // Reveal the action backgrounds only while swiping: at rest they sit under
+    // the card's rounded corners and bleed through the clip's antialiasing.
+    if (actionsRef.current) actionsRef.current.style.opacity = '1'
 
     const clamped = Math.max(-MAX_SWIPE, Math.min(MAX_SWIPE, deltaX))
     currentOffset.current = clamped
@@ -67,6 +71,13 @@ export function SwipeableCard({
     if (foregroundRef.current) {
       foregroundRef.current.style.transition = 'transform 200ms ease-out'
       foregroundRef.current.style.transform = 'translateX(0)'
+    }
+    // Hide the backgrounds again once the card is home (after the spring).
+    if (actionsRef.current) {
+      const actions = actionsRef.current
+      window.setTimeout(() => {
+        actions.style.opacity = '0'
+      }, 200)
     }
     currentOffset.current = 0
     locked.current = null
@@ -90,8 +101,8 @@ export function SwipeableCard({
 
   return (
     <div className={cn('relative overflow-hidden rounded-xl', className)}>
-      {/* Action backgrounds (touch widths only) */}
-      <div className="absolute inset-0 flex sm:hidden">
+      {/* Action backgrounds (touch widths only), revealed during a swipe */}
+      <div ref={actionsRef} className="absolute inset-0 flex opacity-0 sm:hidden">
         <div className="flex w-1/2 items-center gap-2 bg-muted pl-4">
           <Pencil className="size-4 text-foreground" />
           <span className="text-sm font-medium">{leftLabel}</span>
@@ -108,7 +119,10 @@ export function SwipeableCard({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchCancel}
-        className="relative z-10 bg-card"
+        // Rounded like the container: with square corners, the container's
+        // rounded clip antialiases this layer's edge and lets the red delete
+        // background show through as an arc in each bottom corner.
+        className="relative z-10 rounded-xl bg-card"
       >
         {children}
       </div>

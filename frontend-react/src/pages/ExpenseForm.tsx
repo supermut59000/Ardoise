@@ -12,7 +12,9 @@ import { computeOwed, distributeRemainder, pinnedParts, validateSplit } from '@/
 import type { ExpenseShare, SplitMode } from '@/domain/types'
 import { MemberAvatar } from '@/components/ui/member-avatar'
 import { EmojiPickerDialog } from '@/components/expense/EmojiPickerDialog'
+import { BrandMark } from '@/components/ui/brand-mark'
 import { suggestEmoji } from '@/lib/emoji'
+import { findBrand, suggestBrand } from '@/lib/brands'
 import { formatCents, parseAmountToCents, todayIso } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
 import { useMe } from '@/lib/me'
@@ -41,7 +43,9 @@ export function ExpenseForm() {
 
   const [description, setDescription] = useState('')
   const [emoji, setEmoji] = useState('')
-  // Once the user picks (or clears) an emoji themselves, stop auto-suggesting.
+  // Brand id ('' = none): "Burger King" shows the logo instead of the emoji.
+  const [brand, setBrand] = useState('')
+  // Once the user picks (or clears) an icon themselves, stop auto-suggesting.
   const [emojiTouched, setEmojiTouched] = useState(false)
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false)
   const [amount, setAmount] = useState('')
@@ -64,6 +68,7 @@ export function ExpenseForm() {
   }
   const members = data.members
   const existing = expenseId ? data.expenses.find((e) => e.id === expenseId) : undefined
+  const pickedBrand = findBrand(brand)
   const amountCents = parseAmountToCents(amount) ?? 0
 
   if (isEdit && !existing) {
@@ -80,6 +85,7 @@ export function ExpenseForm() {
     if (existing) {
       setDescription(existing.description)
       setEmoji(existing.emoji ?? '')
+      setBrand(existing.brand ?? '')
       setEmojiTouched(true)
       setAmount(centsToInput(existing.amountCents))
       setPaidBy(existing.paidBy)
@@ -198,6 +204,7 @@ export function ExpenseForm() {
       paidBy,
       spentAt,
       emoji,
+      brand,
       splitMode,
       shares,
     }
@@ -228,6 +235,7 @@ export function ExpenseForm() {
               paidBy: snapshot.paidBy,
               spentAt: snapshot.spentAt,
               emoji: snapshot.emoji,
+              brand: snapshot.brand,
               splitMode: snapshot.splitMode,
               shares: snapshot.shares,
             })
@@ -260,19 +268,35 @@ export function ExpenseForm() {
             <button
               type="button"
               onClick={() => setEmojiPickerOpen(true)}
-              aria-label={emoji ? `Emoji : ${emoji}. Changer` : 'Choisir un emoji'}
-              title="Choisir un emoji"
+              aria-label={
+                pickedBrand
+                  ? `Logo : ${pickedBrand.name}. Changer`
+                  : emoji
+                    ? `Emoji : ${emoji}. Changer`
+                    : 'Choisir une icone'
+              }
+              title="Choisir une icone"
               className="flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md border text-xl transition-colors hover:bg-accent"
             >
-              {emoji || <SmilePlus className="size-5 text-muted-foreground" />}
+              {pickedBrand ? (
+                <BrandMark brand={pickedBrand} size="sm" />
+              ) : (
+                emoji || <SmilePlus className="size-5 text-muted-foreground" />
+              )}
             </button>
             <Input
               id="desc"
               value={description}
               onChange={(e) => {
                 setDescription(e.target.value)
-                // Live suggestion: "Courses" -> caddie, "essence" -> pompe...
-                if (!emojiTouched) setEmoji(suggestEmoji(e.target.value) ?? '')
+                // Live suggestion: "Burger King" -> the logo, "essence" -> pompe.
+                // A brand wins over the generic emoji and carries its own as a
+                // fallback, so lists that show emojis stay lively.
+                if (!emojiTouched) {
+                  const match = suggestBrand(e.target.value)
+                  setBrand(match?.id ?? '')
+                  setEmoji(match?.emoji ?? suggestEmoji(e.target.value) ?? '')
+                }
               }}
               placeholder="Courses, restaurant..."
             />
@@ -418,10 +442,12 @@ export function ExpenseForm() {
 
       <EmojiPickerDialog
         value={emoji}
+        brand={brand}
         open={emojiPickerOpen}
         onOpenChange={setEmojiPickerOpen}
-        onSelect={(picked) => {
-          setEmoji(picked)
+        onSelect={(pickedEmoji, pickedBrandId) => {
+          setEmoji(pickedEmoji)
+          setBrand(pickedBrandId)
           setEmojiTouched(true)
         }}
       />

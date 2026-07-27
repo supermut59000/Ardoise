@@ -19,6 +19,8 @@ import { RenameGroupDialog } from '@/components/group/RenameGroupDialog'
 import { DeleteGroupDialog } from '@/components/group/DeleteGroupDialog'
 import { LeaveGroupDialog } from '@/components/group/LeaveGroupDialog'
 import { MemberAvatar } from '@/components/ui/member-avatar'
+import { BrandMark } from '@/components/ui/brand-mark'
+import { findBrand } from '@/lib/brands'
 import { useGroupData } from '@/hooks/use-group-data'
 import { isShared } from '@/sync/engine'
 import { addExpense, addSettlement, deleteExpense, deleteSettlement } from '@/sync/ops'
@@ -70,6 +72,9 @@ export function GroupDetail() {
   const totalCents = expenses.reduce((sum, e) => sum + e.amountCents, 0)
   // Falls back gracefully if an id was removed on another device (no ugly "?").
   const nameOf = (id: string) => members.find((m) => m.id === id)?.name ?? 'Ancien participant'
+  // A brand id from a newer catalogue than this device's simply falls back to
+  // the emoji, which every brand suggestion also stores.
+  const brandOf = (e: Expense) => findBrand(e.brand)
   // In the Soldes tab, mark the local user so they spot their own lines at a glance.
   const label = (id: string) => (id === me ? `${nameOf(id)} (moi)` : nameOf(id))
   const myBalance = me ? balances.find((b) => b.memberId === me) : undefined
@@ -92,6 +97,7 @@ export function GroupDetail() {
               paidBy: expense.paidBy,
               spentAt: expense.spentAt,
               emoji: expense.emoji,
+              brand: expense.brand,
               splitMode: expense.splitMode,
               shares: expense.shares,
             })
@@ -293,12 +299,17 @@ export function GroupDetail() {
                       onClick={() => navigate(`/g/${groupId}/e/${e.id}`)}
                       className="flex w-full cursor-pointer items-center gap-3 p-3 text-left"
                     >
-                      {/* Emoji tile with the payer's avatar as a corner badge; plain avatar otherwise */}
-                      {e.emoji ? (
+                      {/* Brand logo, else emoji tile, else the plain avatar. The
+                          payer's avatar rides along as a corner badge. */}
+                      {brandOf(e) || e.emoji ? (
                         <span className="relative shrink-0">
-                          <span className="flex size-10 items-center justify-center rounded-full bg-accent text-xl">
-                            {e.emoji}
-                          </span>
+                          {brandOf(e) ? (
+                            <BrandMark brand={brandOf(e)!} size="md" />
+                          ) : (
+                            <span className="flex size-10 items-center justify-center rounded-full bg-accent text-xl">
+                              {e.emoji}
+                            </span>
+                          )}
                           <MemberAvatar
                             name={nameOf(e.paidBy)}
                             seed={e.paidBy}
