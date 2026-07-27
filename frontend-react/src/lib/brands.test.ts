@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { BRANDS, completeBrand, findBrand, needsDarkInk, searchBrands, suggestBrand } from './brands'
+import { BRANDS, findBrand, needsDarkInk, searchBrands, suggestBrand } from './brands'
 
 describe('suggestBrand', () => {
   it('recognises a brand written on its own', () => {
@@ -60,43 +60,6 @@ describe('searchBrands', () => {
 
   it('returns nothing for an empty query', () => {
     expect(searchBrands('')).toEqual([])
-  })
-})
-
-describe('completeBrand', () => {
-  it('proposes a brand from the first letters', () => {
-    const [first] = completeBrand('burg')
-    expect(first.brand.id).toBe('burgerking')
-    expect(first.completed).toBe('Burger King')
-  })
-
-  it('replaces only the word being typed, keeping what came before', () => {
-    const [first] = completeBrand('Courses carre')
-    expect(first.brand.id).toBe('carrefour')
-    expect(first.completed).toBe('Courses Carrefour')
-  })
-
-  it('completes multi-word brands from a partial second word', () => {
-    const [first] = completeBrand('uber ea')
-    expect(first.brand.id).toBe('ubereats')
-    expect(first.completed).toBe('Uber Eats')
-  })
-
-  it('offers nothing once the name is fully typed (the logo is already set)', () => {
-    expect(completeBrand('Burger King')).toEqual([])
-    expect(completeBrand('burger king')).toEqual([])
-  })
-
-  it('stays quiet on an empty or too-short fragment', () => {
-    expect(completeBrand('')).toEqual([])
-    expect(completeBrand('a')).toEqual([])
-    expect(completeBrand('Repas entre amis')).toEqual([])
-  })
-
-  it('never proposes the same brand twice and respects the limit', () => {
-    const results = completeBrand('c', 4)
-    expect(results.length).toBeLessThanOrEqual(4)
-    expect(new Set(results.map((r) => r.brand.id)).size).toBe(results.length)
   })
 })
 

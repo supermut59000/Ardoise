@@ -14,7 +14,7 @@ import { MemberAvatar } from '@/components/ui/member-avatar'
 import { EmojiPickerDialog } from '@/components/expense/EmojiPickerDialog'
 import { BrandMark } from '@/components/ui/brand-mark'
 import { suggestEmoji } from '@/lib/emoji'
-import { completeBrand, findBrand, suggestBrand } from '@/lib/brands'
+import { findBrand, suggestBrand } from '@/lib/brands'
 import { formatCents, parseAmountToCents, todayIso } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
 import { useMe } from '@/lib/me'
@@ -48,8 +48,6 @@ export function ExpenseForm() {
   // Once the user picks (or clears) an icon themselves, stop auto-suggesting.
   const [emojiTouched, setEmojiTouched] = useState(false)
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false)
-  // Hidden right after picking a suggestion, until the next keystroke.
-  const [completionsHidden, setCompletionsHidden] = useState(false)
   const [amount, setAmount] = useState('')
   const [paidBy, setPaidBy] = useState('')
   const [spentAt, setSpentAt] = useState(todayIso())
@@ -71,16 +69,6 @@ export function ExpenseForm() {
   const members = data.members
   const existing = expenseId ? data.expenses.find((e) => e.id === expenseId) : undefined
   const pickedBrand = findBrand(brand)
-  const completions = completionsHidden ? [] : completeBrand(description)
-
-  /** Tap on a suggestion: finish the name and set its logo for good. */
-  function applyCompletion(completed: string, brandId: string, brandEmoji: string) {
-    setDescription(completed)
-    setBrand(brandId)
-    setEmoji(brandEmoji)
-    setEmojiTouched(true) // a deliberate choice: stop auto-suggesting over it
-    setCompletionsHidden(true)
-  }
   const amountCents = parseAmountToCents(amount) ?? 0
 
   if (isEdit && !existing) {
@@ -276,7 +264,7 @@ export function ExpenseForm() {
       <form onSubmit={handleSubmit} className="space-y-5">
         <div className="space-y-1.5">
           <label htmlFor="desc" className="text-sm font-medium">Description</label>
-          <div className="relative flex gap-2">
+          <div className="flex gap-2">
             <button
               type="button"
               onClick={() => setEmojiPickerOpen(true)}
@@ -301,7 +289,6 @@ export function ExpenseForm() {
               value={description}
               onChange={(e) => {
                 setDescription(e.target.value)
-                setCompletionsHidden(false)
                 // Live suggestion: "Burger King" -> the logo, "essence" -> pompe.
                 // A brand wins over the generic emoji and carries its own as a
                 // fallback, so lists that show emojis stay lively.
@@ -311,43 +298,8 @@ export function ExpenseForm() {
                   setEmoji(match?.emoji ?? suggestEmoji(e.target.value) ?? '')
                 }
               }}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setCompletionsHidden(true)
-                // Enter would submit the form; complete the name instead.
-                if (e.key === 'Enter' && completions.length > 0) {
-                  e.preventDefault()
-                  const [first] = completions
-                  applyCompletion(first.completed, first.brand.id, first.brand.emoji)
-                }
-              }}
               placeholder="Courses, restaurant..."
-              autoComplete="off"
             />
-
-            {/* Brand typeahead: "burg" -> Burger King, tap fills the name and
-                sets the logo. Sits over the amount field, like any combobox. */}
-            {completions.length > 0 && (
-              <ul
-                className="absolute inset-x-0 top-full z-30 mt-1 overflow-hidden rounded-md border bg-popover shadow-md"
-                role="listbox"
-                aria-label="Enseignes suggerees"
-              >
-                {completions.map(({ brand: entry, completed }) => (
-                  <li key={entry.id}>
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={false}
-                      onClick={() => applyCompletion(completed, entry.id, entry.emoji)}
-                      className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-                    >
-                      <BrandMark brand={entry} size="sm" />
-                      <span className="truncate">{entry.name}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
         </div>
 
