@@ -93,6 +93,88 @@ export function computeOwed(
 }
 
 /**
+ * Which parts are pinned, and therefore which members absorb the rest.
+ *
+ * The rule that makes the editor feel right: as soon as the user types ONE
+ * part, the parts an edited expense was saved with stop being pinned, so the
+ * members left alone go back to absorbing the remainder. Without it, opening a
+ * saved 60/40 expense and typing "30" would leave the other part at 60 and
+ * demand mental arithmetic, which is exactly the friction this replaces.
+ *
+ * `typed` holds parsed values keyed by member: a key that is present but null
+ * (field cleared, half-typed) still counts as "the user has taken over", but
+ * that member is not pinned to a value. `saved` is the edited expense's own
+ * split, used only while nothing has been typed.
+ */
+export function pinnedParts(
+  selected: string[],
+  typed: Record<string, number | null>,
+  saved: Record<string, number> | null,
+): Map<string, number> {
+  const pinned = new Map<string, number>()
+  const userTookOver = Object.keys(typed).length > 0
+  for (const memberId of selected) {
+    if (userTookOver) {
+      const value = typed[memberId]
+      if (value !== undefined && value !== null) pinned.set(memberId, value)
+    } else if (saved && saved[memberId] !== undefined) {
+      pinned.set(memberId, saved[memberId])
+    }
+  }
+  return pinned
+}
+
+/**
+ * Fill in the parts the user did NOT type, so nobody has to compute a
+ * complement by hand: "Bob 40 %" must not force the user to work out that
+ * Alice owes 60, or that three people share the remaining 60 as 20/20/20.
+ *
+ * `total` and `fixed` share one unit: centi-percent (10 000 = 100 %) for the
+ * percent mode, cents for the exact mode. Every selected member absent from
+ * `fixed` absorbs an equal slice of what is left, distributed by `splitCents`,
+ * so the parts always add up to `total` exactly (no cent, no hundredth of a
+ * percent, created or lost).
+ *
+ * When the typed parts already exceed the total, the absorbers get 0 and the
+ * overflow surfaces through `validateSplit` rather than silently going
+ * negative.
+ */
+export function distributeRemainder(
+  total: number,
+  selected: string[],
+  fixed: Map<string, number>,
+): Map<string, number> {
+  const result = new Map<string, number>()
+  const absorbers: string[] = []
+  let fixedSum = 0
+
+  for (const memberId of selected) {
+    const value = fixed.get(memberId)
+    if (value === undefined) {
+      absorbers.push(memberId)
+    } else {
+      result.set(memberId, value)
+      fixedSum += value
+    }
+  }
+
+  if (absorbers.length === 0) return result
+
+  const remainder = total - fixedSum
+  if (remainder <= 0) {
+    for (const memberId of absorbers) result.set(memberId, 0)
+    return result
+  }
+
+  const shared = splitCents(
+    remainder,
+    absorbers.map((memberId) => ({ memberId, weight: 1 })),
+  )
+  for (const memberId of absorbers) result.set(memberId, shared.get(memberId) ?? 0)
+  return result
+}
+
+/**
  * Validate a split before saving. Returns null if valid, otherwise a French
  * message. `amountCents` is the expense total (used by exact mode).
  */

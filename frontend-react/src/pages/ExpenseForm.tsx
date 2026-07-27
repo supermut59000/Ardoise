@@ -8,7 +8,7 @@ import { Select } from '@/components/ui/select'
 import { DateField } from '@/components/ui/date-field'
 import { useGroupData } from '@/hooks/use-group-data'
 import { addExpense, deleteExpense, updateExpense } from '@/sync/ops'
-import { computeOwed, validateSplit } from '@/domain/split'
+import { computeOwed, distributeRemainder, pinnedParts, validateSplit } from '@/domain/split'
 import type { ExpenseShare, SplitMode } from '@/domain/types'
 import { MemberAvatar } from '@/components/ui/member-avatar'
 import { EmojiPickerDialog } from '@/components/expense/EmojiPickerDialog'
@@ -25,6 +25,11 @@ const MODES: { value: SplitMode; label: string }[] = [
 ]
 
 const centsToInput = (cents: number) => (cents / 100).toFixed(2).replace('.', ',')
+/** Centi-percent (3333) as a clean French input value ("33,33", "50"). */
+const centiToInput = (centi: number) =>
+  centi % 100 === 0 ? String(centi / 100) : (centi / 100).toFixed(2).replace('.', ',')
+/** Parts accept decimals ("1,5"); anything unparsable counts as no part. */
+const parseParts = (text: string) => Number(text.replace(',', '.')) || 0
 
 /** Add mode (route /g/:groupId/add) and edit mode (/g/:groupId/e/:expenseId). */
 export function ExpenseForm() {
@@ -43,8 +48,14 @@ export function ExpenseForm() {
   const [paidBy, setPaidBy] = useState('')
   const [spentAt, setSpentAt] = useState(todayIso())
   const [splitMode, setSplitMode] = useState<SplitMode>('equal')
-  const [included, setIncluded] = useState<Set<string>>(new Set()) // equal mode
-  const [raw, setRaw] = useState<Record<string, string>>({}) // shares/percent/exact
+  // Who takes part, in EVERY mode: the split is always "these people share this".
+  const [included, setIncluded] = useState<Set<string>>(new Set())
+  // Parts the user typed by hand this session. Everyone else absorbs the rest,
+  // so setting "Bob 40 %" never requires working out the others.
+  const [typed, setTyped] = useState<Record<string, string>>({})
+  // Parts of the expense being edited, shown as-is until the user types
+  // anything (then they become absorbers, like in add mode).
+  const [seed, setSeed] = useState<Record<string, number> | null>(null)
   const [initialized, setInitialized] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -76,12 +87,18 @@ export function ExpenseForm() {
       const mode = existing.splitMode ?? 'equal'
       setSplitMode(mode)
       setIncluded(new Set(existing.shares.map((s) => s.memberId)))
-      const r: Record<string, string> = {}
-      for (const s of existing.shares) {
-        // Weights may be decimal since the un-floor fix; show them French-style.
-        r[s.memberId] = mode === 'exact' ? centsToInput(s.weight) : String(s.weight).replace('.', ',')
+      if (mode === 'shares') {
+        // Parts are relative, nothing to balance: show them as plain inputs.
+        const r: Record<string, string> = {}
+        for (const s of existing.shares) r[s.memberId] = String(s.weight).replace('.', ',')
+        setTyped(r)
+      } else if (mode === 'percent' || mode === 'exact') {
+        const s: Record<string, number> = {}
+        for (const share of existing.shares) {
+          s[share.memberId] = mode === 'exact' ? share.weight : Math.round(share.weight * 100)
+        }
+        setSeed(s)
       }
-      setRaw(r)
     } else {
       // Default the payer to the local user when they told us who they are.
       setPaidBy(me && members.some((m) => m.id === me) ? me : members[0].id)
@@ -90,24 +107,12 @@ export function ExpenseForm() {
     setInitialized(true)
   }
 
-  function initRawFor(mode: SplitMode): Record<string, string> {
-    const ids = members.map((m) => m.id)
-    if (mode === 'shares') return Object.fromEntries(ids.map((id) => [id, '1']))
-    if (mode === 'percent') {
-      const base = Math.floor(100 / ids.length)
-      const remainder = 100 - base * ids.length
-      return Object.fromEntries(ids.map((id, i) => [id, String(base + (i < remainder ? 1 : 0))]))
-    }
-    if (mode === 'exact') {
-      const per = computeOwed(amountCents, 'equal', ids.map((id) => ({ memberId: id, weight: 1 })))
-      return Object.fromEntries(ids.map((id) => [id, centsToInput(per.get(id) ?? 0)]))
-    }
-    return {}
-  }
-
   function changeMode(mode: SplitMode) {
     setSplitMode(mode)
-    if (mode !== 'equal') setRaw(initRawFor(mode))
+    // Values are mode-specific (parts, percent, cents): start the new mode from
+    // an even split of whoever is selected.
+    setTyped({})
+    setSeed(null)
   }
 
   function toggleIncluded(id: string) {
@@ -117,27 +122,62 @@ export function ExpenseForm() {
       else next.add(id)
       return next
     })
+    // A member taken out and put back in becomes an absorber again.
+    setTyped((prev) => {
+      if (prev[id] === undefined) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+  }
+
+  /** Back to a plain even split between the selected members. */
+  function resetSplit() {
+    setTyped({})
+    setSeed(null)
+  }
+
+  // Selected members in group order, so the leftover cent always lands on the
+  // same person on every device.
+  const selectedIds = members.filter((m) => included.has(m.id)).map((m) => m.id)
+  const hasTyped = Object.keys(typed).length > 0
+  const isBalanced = splitMode === 'percent' || splitMode === 'exact'
+
+  // Typed text parsed into the mode's unit: hundredths of a euro (cents) or of
+  // a percent (centi-percent). A present-but-null entry means the user is mid
+  // edit; the member is simply not pinned.
+  const typedParts = Object.fromEntries(
+    Object.entries(typed).map(([id, text]) => [id, parseAmountToCents(text)]),
+  )
+
+  // Everyone selected gets a part; the untouched ones share what is left.
+  const balanced = isBalanced
+    ? distributeRemainder(
+        splitMode === 'exact' ? amountCents : 10_000,
+        selectedIds,
+        pinnedParts(selectedIds, typedParts, seed),
+      )
+    : null
+
+  /** What an input shows: the text being typed, otherwise the computed part. */
+  function partInput(id: string): string {
+    if (splitMode === 'shares') return typed[id] ?? '1'
+    if (hasTyped && typed[id] !== undefined) return typed[id]
+    const value = balanced?.get(id) ?? 0
+    return splitMode === 'exact' ? centsToInput(value) : centiToInput(value)
   }
 
   // Build the shares array from the current mode's inputs.
   function buildShares(): ExpenseShare[] {
-    if (splitMode === 'equal') {
-      return [...included].map((memberId) => ({ memberId, weight: 1 }))
+    if (splitMode === 'equal') return selectedIds.map((memberId) => ({ memberId, weight: 1 }))
+    if (splitMode === 'shares') {
+      return selectedIds.map((memberId) => ({ memberId, weight: parseParts(typed[memberId] ?? '1') }))
     }
-    const out: ExpenseShare[] = []
-    for (const m of members) {
-      const text = raw[m.id] ?? ''
-      // Decimal weights are honored as typed (1,5 parts; 33,33 %): flooring
-      // them silently made "33,33 / 33,33 / 33,34" fail validation while the
-      // user was looking at numbers that total 100. splitCents is proportional,
-      // so fractional weights split correctly and still conserve the total.
-      const weight =
-        splitMode === 'exact'
-          ? (parseAmountToCents(text) ?? 0)
-          : Number(text.replace(',', '.')) || 0
-      if (weight > 0) out.push({ memberId: m.id, weight })
-    }
-    return out
+    // percent weights are plain percentages (33,33), exact weights are cents.
+    return selectedIds.map((memberId) => {
+      const value = balanced?.get(memberId) ?? 0
+      return { memberId, weight: splitMode === 'exact' ? value : value / 100 }
+    })
   }
 
   const shares = buildShares()
@@ -295,38 +335,74 @@ export function ExpenseForm() {
                   </button>
                 )
               }
+              const active = included.has(m.id)
               return (
-                <div key={m.id} className="flex items-center gap-2">
-                  <MemberAvatar name={m.name} seed={m.id} size="xs" />
-                  <span className="flex-1 truncate text-sm">{m.name}</span>
-                  {splitMode !== 'exact' && owedCents !== undefined && (
-                    <span className="w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                      {formatCents(owedCents)}
+                <div
+                  key={m.id}
+                  className={`flex items-center gap-2 rounded-md border px-2 py-1.5 transition-colors ${active ? 'border-primary bg-accent/50' : ''}`}
+                >
+                  {/* Same tap-to-include affordance as the equal mode: you pick
+                      who takes part first, the parts follow. */}
+                  <button
+                    type="button"
+                    onClick={() => toggleIncluded(m.id)}
+                    aria-pressed={active}
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                  >
+                    <MemberAvatar name={m.name} seed={m.id} size="xs" className={active ? '' : 'opacity-50'} />
+                    <span className={`min-w-0 flex-1 truncate text-sm ${active ? '' : 'text-muted-foreground'}`}>
+                      {m.name}
                     </span>
+                  </button>
+                  {active ? (
+                    <>
+                      {splitMode !== 'exact' && owedCents !== undefined && (
+                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                          {formatCents(owedCents)}
+                        </span>
+                      )}
+                      <Input
+                        value={partInput(m.id)}
+                        onChange={(e) => setTyped((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                        inputMode="decimal"
+                        className="h-9 w-20 shrink-0 text-right"
+                        aria-label={`${m.name} ${splitMode}`}
+                      />
+                      {splitMode !== 'exact' && (
+                        <span className="w-8 shrink-0 text-xs text-muted-foreground">
+                          {splitMode === 'percent' ? '%' : 'parts'}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="shrink-0 pr-1 text-xs text-muted-foreground">Non concerne</span>
                   )}
-                  <Input
-                    value={raw[m.id] ?? ''}
-                    onChange={(e) => setRaw((prev) => ({ ...prev, [m.id]: e.target.value }))}
-                    inputMode="decimal"
-                    className="h-9 w-24 text-right"
-                    placeholder={splitMode === 'percent' ? '%' : splitMode === 'exact' ? '0,00' : 'parts'}
-                    aria-label={`${m.name} ${splitMode}`}
-                  />
                 </div>
               )
             })}
           </div>
 
-          {splitError && amount ? (
-            <p className="text-xs text-destructive">{splitError}</p>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {splitMode === 'equal' && 'Part egale entre les participants selectionnes.'}
-              {splitMode === 'shares' && 'Repartition selon le nombre de parts.'}
-              {splitMode === 'percent' && 'Les pourcentages doivent totaliser 100.'}
-              {splitMode === 'exact' && 'Les montants doivent totaliser la depense.'}
-            </p>
-          )}
+          <div className="flex items-start justify-between gap-2">
+            {splitError && amount ? (
+              <p className="text-xs text-destructive">{splitError}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {splitMode === 'equal' && 'Part egale entre les participants selectionnes.'}
+                {splitMode === 'shares' && 'Repartition selon le nombre de parts.'}
+                {splitMode === 'percent' && "Modifiez une part, le reste s'ajuste."}
+                {splitMode === 'exact' && "Modifiez un montant, le reste s'ajuste."}
+              </p>
+            )}
+            {isBalanced && (hasTyped || seed) && (
+              <button
+                type="button"
+                onClick={resetSplit}
+                className="shrink-0 cursor-pointer text-xs text-muted-foreground underline transition-colors hover:text-foreground"
+              >
+                Repartir egalement
+              </button>
+            )}
+          </div>
         </div>
 
         <Button type="submit" size="lg" className="w-full" disabled={saving || Boolean(splitError)}>

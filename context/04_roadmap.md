@@ -1,6 +1,6 @@
 # 04 - Roadmap and build status
 
-Each phase is independently usable. Current status: **Phase 4 complete + audit/UX passes D22-D34, deployed on the homelab** (2026-07-16). Next: feedback from real use with friends (user will direct).
+Each phase is independently usable. Current status: **Phase 4 complete + audit/UX passes D22-D35, deployed on the homelab** (2026-07-16). Next: feedback from real use with friends (user will direct).
 
 ## Phase 0 - Scaffold (done 2026-07-13)
 
@@ -38,7 +38,7 @@ Two devices/people now converge through the self-hosted relay.
 Scope for the delivered pass (user-chosen 2026-07-14): unequal splits, settle-up recording, CSV + JSON export. Receipt photos removed from scope by the user. Categories and multi-currency deferred (one currency per group stays).
 
 Delivered (2026-07-14):
-- **Unequal splits**: `SplitMode = equal | shares | percent | exact` on Expense (absent = equal, back-compat). `computeOwed` (proportional for equal/shares/percent via `splitCents`; verbatim cents for exact) + `validateSplit`. Split editor in [ExpenseForm](../frontend-react/src/pages/ExpenseForm.tsx): segmented mode picker, per-member inputs, live owed preview, submit blocked on invalid split.
+- **Unequal splits**: `SplitMode = equal | shares | percent | exact` on Expense (absent = equal, back-compat). `computeOwed` (proportional for equal/shares/percent via `splitCents`; verbatim cents for exact) + `validateSplit`. Split editor in [ExpenseForm](../frontend-react/src/pages/ExpenseForm.tsx): segmented mode picker, per-member inputs, live owed preview, submit blocked on invalid split. Reworked in D35: participant selection in every mode and self-balancing parts.
 - **Settle-up**: `Settlement` entity folded like the others (LWW, delete-terminal); `computeBalances` takes settlements (from +amount, to -amount) and still nets to zero; ops `addSettlement`/`deleteSettlement`. UI: "Regler" on each suggested transfer records it; recorded settlements listed with undo. Settlements sync as ordinary ops (server needs no change, payload is generic JSON).
 - **Export** ([lib/export.ts](../frontend-react/src/lib/export.ts)): pure `buildJsonExport` (full op log = own-your-data) + `buildCsvExport` (French `;`-delimited, comma decimals, per-participant repartition, UTF-8 BOM). Per-group CSV/JSON in the group menu; export-all JSON on the home menu.
 - **Tests**: 78 FE (added split-modes, settlements, export, and an exact-split + settlement scenario). tsc clean, build emits SW, dev server transforms all modules.

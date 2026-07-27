@@ -6,9 +6,9 @@ See [context/](context/) for architecture and decisions. Read [context/README.md
 
 ## Stack
 
-- **Frontend**: React 19 + TS + Vite + Tailwind v4 + shadcn/ui + TanStack Query, Dexie (IndexedDB) for local-first storage, vite-plugin-pwa.
+- **Frontend**: React 19 + TS + Vite + Tailwind v4 + shadcn/ui, Dexie (IndexedDB) for local-first storage with live queries, vite-plugin-pwa (custom service worker for Web Push).
 - **Backend**: FastAPI + SQLAlchemy 2.0 + Alembic + MariaDB. The backend is a sync relay over an append-only operation log; it never merges state.
-- **Infra**: Docker Compose. Frontend on host port 3060, backend on 8065, MariaDB on 3307.
+- **Infra**: Docker Compose. Frontend on host port 3060, backend on 8065 (loopback only), MariaDB unpublished (reachable only over the compose network).
 
 ## Quick start (Docker)
 
@@ -38,6 +38,16 @@ docker compose run --rm --no-deps -v ./backend:/app backend \
   alembic revision --autogenerate -m "describe change"
 ```
 
+## Tests
+
+```bash
+cd frontend-react && npm test        # vitest
+
+# Backend (pytest is not in the image; install the dev deps first)
+docker compose run --rm --no-deps -v ./backend:/app backend \
+  sh -c "pip install -q -r requirements-dev.txt && python -m pytest tests/ -q"
+```
+
 ## Status
 
-Phase 0 (scaffold) complete and verified: frontend builds with a generated service worker, backend serves `/health` and `/api/v1/system/ping`, MariaDB + Alembic migration applied. See [context/04_roadmap.md](context/04_roadmap.md).
+In real use on the homelab. Fully offline PWA with share-code sync, unequal splits, settle-up, CSV/JSON export and import, per-group identity, and Web Push activity notifications. See [context/04_roadmap.md](context/04_roadmap.md) for the phases and [context/03_decisions.md](context/03_decisions.md) for the decision ledger. Deployment lives in [DEPLOY.md](DEPLOY.md).
