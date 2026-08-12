@@ -232,4 +232,11 @@ describe('validateSplit', () => {
     expect(validateSplit('shares', 1000, shares([['a', 0], ['b', 0]]))).not.toBeNull()
     expect(validateSplit('shares', 1000, shares([['a', 1], ['b', 0]]))).toBeNull()
   })
+
+  it('rejects negative and non-numeric parts', () => {
+    // The old path accepted -1/2 and attributed -10 EUR / +20 EUR on a
+    // 10 EUR expense, creating an impossible debt larger than the purchase.
+    expect(validateSplit('shares', 1000, shares([['a', -1], ['b', 2]]))).not.toBeNull()
+    expect(validateSplit('shares', 1000, shares([['a', Number.NaN], ['b', 1]]))).not.toBeNull()
+  })
 })

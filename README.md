@@ -50,4 +50,4 @@ docker compose run --rm --no-deps -v ./backend:/app backend \
 
 ## Status
 
-In real use on the homelab. Fully offline PWA with share-code sync, unequal splits, settle-up, CSV/JSON export and import, per-group identity, and Web Push activity notifications. See [context/04_roadmap.md](context/04_roadmap.md) for the phases and [context/03_decisions.md](context/03_decisions.md) for the decision ledger. Deployment lives in [DEPLOY.md](DEPLOY.md).
+In real use on the homelab. Fully offline PWA with share-code and automatic QR joining, unequal splits, settle-up, CSV/JSON export and import, per-group identity, and Web Push activity notifications. See [context/04_roadmap.md](context/04_roadmap.md) for the phases and [context/03_decisions.md](context/03_decisions.md) for the decision ledger. Deployment lives in [DEPLOY.md](DEPLOY.md).

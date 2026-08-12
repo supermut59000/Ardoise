@@ -6,6 +6,7 @@ from app.schemas.sync import OperationWire, PullResponse, PushRequest, PushRespo
 from app.services.group_service import GroupService
 from app.services.push_service import NOTIFY_MAX_BATCH, notify_task, push_enabled
 from app.services.sync_service import SyncService
+from app.services.server_meta_service import server_generation
 
 router = APIRouter()
 
@@ -52,4 +53,4 @@ def pull_ops(
         )
         for r in rows
     ]
-    return PullResponse(ops=ops, cursor=cursor)
+    return PullResponse(ops=ops, cursor=cursor, server_generation=server_generation(db))

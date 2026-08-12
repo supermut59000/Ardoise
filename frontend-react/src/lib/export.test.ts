@@ -141,6 +141,12 @@ describe('buildCsvExport', () => {
     expect(csv).toContain('"Diner; pourboire"')
   })
 
+  it('neutralizes spreadsheet formulas in text fields', () => {
+    const csv = buildCsvExport(members, [expense({ description: '=1+1' })])
+    expect(csv).toContain(";'=1+1;")
+    expect(csv).not.toContain(';=1+1;')
+  })
+
   it('reflects an exact split in the repartition column', () => {
     const csv = buildCsvExport(
       members,

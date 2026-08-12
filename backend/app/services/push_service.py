@@ -70,7 +70,9 @@ def _latest_payload_field(
     )
     if entity_id is not None:
         q = q.filter(Operation.entity_id == entity_id)
-    for row in q.order_by(Operation.lamport.desc(), Operation.seq.desc()).all():
+    # Match the client fold exactly: equal Lamports are resolved by op_id,
+    # never by server arrival order (seq).
+    for row in q.order_by(Operation.lamport.desc(), Operation.op_id.desc()).all():
         value = (row.payload or {}).get(field)
         if value:
             return str(value)

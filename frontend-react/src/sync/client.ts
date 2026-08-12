@@ -7,6 +7,7 @@ export type WireOp = Omit<Operation, 'synced'>
 export interface GroupInfo {
   groupId: string
   shareCode: string
+  serverGeneration: string
 }
 
 // Configurable at build time; defaults to a same-origin /api/v1 (prod behind a proxy).
@@ -109,7 +110,7 @@ export function pushOps(
 export function pullOps(
   groupId: string,
   since: number,
-): Promise<{ ops: WireOp[]; cursor: number }> {
+): Promise<{ ops: WireOp[]; cursor: number; serverGeneration: string }> {
   return request(`/groups/${groupId}/ops?since=${since}`)
 }
 

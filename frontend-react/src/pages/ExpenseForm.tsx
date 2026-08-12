@@ -30,8 +30,11 @@ const centsToInput = (cents: number) => (cents / 100).toFixed(2).replace('.', ',
 /** Centi-percent (3333) as a clean French input value ("33,33", "50"). */
 const centiToInput = (centi: number) =>
   centi % 100 === 0 ? String(centi / 100) : (centi / 100).toFixed(2).replace('.', ',')
-/** Parts accept decimals ("1,5"); anything unparsable counts as no part. */
-const parseParts = (text: string) => Number(text.replace(',', '.')) || 0
+/** Parts accept decimals ("1,5"); invalid text remains NaN so validation blocks it. */
+const parseParts = (text: string) => {
+  const value = Number(text.replace(',', '.'))
+  return text.trim() && Number.isFinite(value) ? value : Number.NaN
+}
 
 /** Add mode (route /g/:groupId/add) and edit mode (/g/:groupId/e/:expenseId). */
 export function ExpenseForm() {

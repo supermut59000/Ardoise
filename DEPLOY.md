@@ -94,14 +94,15 @@ and persistent storage, and Caddy provides it.
 1. Open `https://ardoise.example.com`, menu -> **Mot de passe du serveur**, enter `API_KEY`.
    It is validated against the server and stored permanently in the browser.
 2. Create a group, add expenses (works offline), then **Partager** to sync.
-3. Friends open the same URL, enter the password once, and **Rejoindre** with the code.
+3. For the simplest friend setup, let them scan the QR code shown in **Partager**. It carries the group code and your current server password in the URL fragment, joins automatically, and removes the credentials from the address bar before contacting the server. The fragment is not sent to Caddy/nginx access logs. Treat the QR like the shared password and show it only to trusted people.
+4. The manual fallback remains: friends open the same URL, enter the password once, and **Rejoindre** with the code.
 
 ## Notes
 
 - The password gates **sync only** (`register`/`resolve`/`push`/`pull`). The static app
   still loads without it; you just cannot sync until it is entered. `/health` and
   `/system/ping` stay open for liveness checks (`/health` returns 503 when the DB is down).
-- Changing `API_KEY` later logs everyone out of sync; they re-enter the new one once.
+- Changing `API_KEY` later logs everyone out of sync; they re-enter the new one once or scan a newly generated group QR code.
 - **The server is disposable.** If its database is ever wiped or restored from an old
   backup, the phones detect it and automatically re-register and re-upload the full
   history (see context/02). The only visible effect of a full wipe is a new share code

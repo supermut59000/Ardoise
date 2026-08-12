@@ -196,7 +196,10 @@ export function validateSplit(
     // point even though the user typed exactly 100.
     if (Math.round(sum * 100) !== 100_00) return 'Les pourcentages doivent totaliser 100'
   } else if (mode === 'shares') {
-    if (shares.every((s) => s.weight <= 0)) return 'Au moins une part doit etre positive'
+    if (shares.some((s) => !Number.isFinite(s.weight) || s.weight < 0)) {
+      return 'Les parts doivent etre des nombres positifs'
+    }
+    if (shares.every((s) => s.weight === 0)) return 'Au moins une part doit etre positive'
   }
   return null
 }

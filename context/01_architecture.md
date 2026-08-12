@@ -16,7 +16,7 @@
 | PWA / SW | **vite-plugin-pwa** (Workbox) | Replaces hand-rolled sw.js: precache, update flow, Background Sync where supported |
 | Backend | FastAPI + SQLAlchemy 2.0 + Pydantic 2 + Alembic | Same as VroomVroom |
 | DB | MariaDB (or Postgres) | Same as VroomVroom; op log is a simple append table |
-| Auth / sharing | **Share-code join** (see 03, decision D6) | Low friction for "me + friends/household" |
+| Auth / sharing | **Share-code join + automatic QR** (see 03, decisions D6/D39) | Manual fallback plus one-scan setup for trusted friends |
 | Deploy | Docker Compose on homelab, reverse proxy, `*.home.ouiouibaguette.fr` | Same as VroomVroom |
 
 ## Domain model

@@ -17,6 +17,13 @@ class TestGroups:
         first = register(client)
         second = register(client)
         assert first["shareCode"] == second["shareCode"]
+        assert first["serverGeneration"] == second["serverGeneration"]
+
+    def test_register_rejects_overlong_group_id(self, client):
+        # Mirrors groups.id String(36): reject at the API boundary, not as a
+        # MariaDB strict-mode 500 during commit.
+        r = client.post("/api/v1/groups/register", json={"groupId": "x" * 37})
+        assert r.status_code == 422
 
     def test_resolve_share_code(self, client):
         code = register(client)["shareCode"]
@@ -50,6 +57,7 @@ class TestPushPull:
         assert body["ops"][0]["opId"] == "o1"
         assert body["ops"][0]["payload"] == {"amountCents": 100}
         assert body["cursor"] >= 2
+        assert body["serverGeneration"]
 
     def test_push_is_idempotent(self, client):
         register(client)

@@ -14,6 +14,8 @@ export interface SyncState {
   groupId: string
   cursor: number // highest server seq we have pulled
   shareCode: string
+  /** Identifies the server DB lifetime; a changed value means the DB was wiped. */
+  serverGeneration?: string
 }
 
 /**

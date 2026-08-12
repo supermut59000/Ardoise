@@ -40,14 +40,17 @@ class PushResponse(BaseModel):
 class PullResponse(BaseModel):
     ops: List[OperationWire]
     cursor: int    # max seq returned; pass back as ?since= next time
+    server_generation: str = Field(serialization_alias="serverGeneration")
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RegisterRequest(BaseModel):
-    group_id: str = Field(alias="groupId")
+    group_id: str = Field(alias="groupId", min_length=1, max_length=36)
     model_config = ConfigDict(populate_by_name=True)
 
 
 class GroupOut(BaseModel):
     group_id: str = Field(serialization_alias="groupId")
     share_code: str = Field(serialization_alias="shareCode")
+    server_generation: str = Field(serialization_alias="serverGeneration")
     model_config = ConfigDict(populate_by_name=True)

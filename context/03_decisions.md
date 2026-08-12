@@ -325,3 +325,15 @@ A typeahead under the description field was built and shipped as D37 (a combobox
 - *How*: `git revert` of the D37 commit (history kept, no force push), so the deployed app matches D36 exactly.
 - *Alternatives if it ever comes back*: the pure `completeBrand()` and its 6 tests are in the reverted commit and can be restored from git; do not rebuild them from scratch.
 - *Status*: **active. Do not re-propose a description typeahead** unless the user asks for it explicitly. D36 (auto-suggestion on the full name, manual override through the icon picker) stands.
+
+### D39 - 2026-08-12 - Automatic QR invites and generation-safe server recovery
+
+A group share dialog now shows a QR code that carries the share code and the current shared server password. Scanning it stores the password on the friend's device and joins the group automatically. Credentials live in the URL fragment, which browsers do not send to Caddy, nginx, or the backend, and the app removes the fragment before making the join request. The QR is therefore a bearer credential and the UI/DEPLOY.md tell the owner to show it only to trusted people. Manual password + code joining remains available.
+
+Server-loss recovery now uses a database-generation UUID returned by register, resolve and pull. Cursor comparison alone was insufficient: after a wipe, one device could reseed enough operations for the new sequence to overtake another device's old cursor, causing that device to skip early operations and never re-upload history it alone held. A generation mismatch always resets the cursor and re-uploads the full local log. Same-generation cursor rewind still covers ordinary backup restores.
+
+The audit fix pack also rejects negative/non-numeric split parts, retries an interrupted share after password entry, aligns notification conflict lookup with the client `(lamport, op_id)` order, neutralizes formula-looking CSV text, bounds registration group IDs to the DB column, and updates vulnerable dependencies.
+
+- *Rationale*: QR setup removes the two-step password + code friction for friends without putting the password in HTTP logs. Generation identity closes the last known silent-divergence case in the disposable-server guarantee.
+- *Alternatives*: putting credentials in query parameters (rejected: proxy/access-log leakage); encoding them in a backend-issued one-time token (deferred: needs token storage/expiry and buys little for the trusted-friends shared-password model).
+- *Status*: active. Verified by a two-device cursor-overtake regression, invite fragment tests, full frontend/backend suites, lint and production build. Deployment requires the new Alembic migration.

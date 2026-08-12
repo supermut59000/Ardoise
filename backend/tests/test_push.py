@@ -98,6 +98,21 @@ class TestBuildBody:
 
 
 class TestNotifyFanOut:
+    def test_lookup_ties_use_op_id_like_the_client_fold(self, client):
+        client.post("/api/v1/groups/register", json={"groupId": "g1"})
+        # zzz wins the client fold at equal Lamport even though it arrives first.
+        client.post(
+            "/api/v1/groups/g1/ops",
+            json={"ops": [
+                make_op("zzz", "g1", 5, entity="group", entityId="g1", action="update", payload={"name": "Paris"}),
+                make_op("aaa", "g1", 5, entity="group", entityId="g1", action="update", payload={"name": "Lyon"}),
+            ]},
+        )
+        from app.core.database import get_db
+        from app.main import app
+        db = next(iter(app.dependency_overrides[get_db]()))
+        assert push_service._latest_payload_field(db, "g1", "group", "name") == "Paris"
+
     def _seed_subscriptions(self, client, push_on):
         client.post("/api/v1/push/subscribe", json=subscription_body("https://push.example/author", "devA", ("g1",)))
         client.post("/api/v1/push/subscribe", json=subscription_body("https://push.example/friend", "devB", ("g1",)))

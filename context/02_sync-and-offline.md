@@ -39,8 +39,9 @@ Operation
 
 The devices hold the full log, so any server-side data loss is recoverable from the phones, automatically:
 
-- **404 on push/pull** (DB wiped/recreated): the client re-registers the same group id, marks its whole local log unsynced, resets the cursor, and re-pushes everything. Each device heals itself the same way; the server converges back to the union of everyone's history. A new share code may be minted (old invite links die; the app shows the current code in Partager).
-- **Pull cursor below ours** (DB restored from an older backup): the client detects the rewind and does the same reset-and-reseed, restoring the ops the backup lost.
+- **Server generation changed** (DB wiped/recreated): every database lifetime has a UUID returned by register/resolve/pull. A device that sees a different UUID marks its whole local log unsynced, resets the cursor, and re-pushes everything. This is required even when the recreated server's new sequence has already overtaken the device's old cursor. Each device heals itself the same way, so the server converges back to the union of everyone's history. A new share code may be minted (old invite links die; the app shows the current code in Partager).
+- **404 on push/pull** is the fast path for the same wipe: the client re-registers the same group id and performs the generation reset immediately.
+- **Pull cursor below ours** (same DB generation restored from an older backup): the client detects the rewind and does the same reset-and-reseed, restoring the ops the backup lost.
 
 Both paths are idempotent (`op_id` dedup) and covered by engine tests (wipe and rewind scenarios).
 

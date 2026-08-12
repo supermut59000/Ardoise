@@ -130,9 +130,11 @@ export async function importJsonExport(text: string, database: ArdoiseDB = db): 
 }
 
 function csvField(value: string): string {
-  // Quote if it contains the delimiter, a quote, or a newline (RFC 4180-ish).
-  if (/[";\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
-  return value
+  // Spreadsheet programs execute formula-looking text even when CSV-quoted.
+  // A leading apostrophe keeps participant names/descriptions as plain text.
+  const safe = /^[\t\r ]*[=+\-@]/.test(value) ? `'${value}` : value
+  if (/[";\n]/.test(safe)) return `"${safe.replace(/"/g, '""')}"`
+  return safe
 }
 
 const amount = (cents: number) => (cents / 100).toFixed(2).replace('.', ',')

@@ -38,10 +38,15 @@ async function pushUnsynced(groupId: string, database: ArdoiseDB): Promise<numbe
 /** Re-seed a group after the server lost (part of) its data: forget the cursor
  *  and mark every local op unsynced, so the next pass re-pushes the full log
  *  (idempotent server-side) and re-pulls everything the peers re-push. */
-async function resetForReseed(groupId: string, database: ArdoiseDB, shareCode: string): Promise<void> {
+async function resetForReseed(
+  groupId: string,
+  database: ArdoiseDB,
+  shareCode: string,
+  serverGeneration: string,
+): Promise<void> {
   await database.transaction('rw', database.operations, database.syncState, async () => {
     await database.operations.where('groupId').equals(groupId).modify({ synced: 0 })
-    await database.syncState.put({ groupId, cursor: 0, shareCode })
+    await database.syncState.put({ groupId, cursor: 0, shareCode, serverGeneration })
   })
 }
 
@@ -75,7 +80,16 @@ export async function syncGroup(
     const pushed = await pushUnsynced(groupId, database)
 
     // 2) Pull new ops from peers and fold them in.
-    const { ops, cursor } = await client.pullOps(groupId, state.cursor)
+    const { ops, cursor, serverGeneration } = await client.pullOps(groupId, state.cursor)
+
+    // Sequence numbers restart after a DB wipe and can quickly overtake an old
+    // cursor, so cursor comparison alone cannot identify a new database. A
+    // generation mismatch always replays the full local log before ingesting.
+    if (state.serverGeneration && serverGeneration !== state.serverGeneration && !healed) {
+      await resetForReseed(groupId, database, state.shareCode, serverGeneration)
+      return syncGroup(groupId, database, true)
+    }
+
     if (ops.length > 0) {
       // Ops from the server are, by definition, already synced.
       const incoming: Operation[] = ops.map((w) => ({ ...w, synced: 1 }))
@@ -83,12 +97,12 @@ export async function syncGroup(
     }
 
     if (cursor < state.cursor && !healed) {
-      // Server rewound (restore from an older backup): re-seed both directions.
-      await resetForReseed(groupId, database, state.shareCode)
+      // Same database restored from an older backup: re-seed both directions.
+      await resetForReseed(groupId, database, state.shareCode, serverGeneration)
       return syncGroup(groupId, database, true)
     }
-    if (cursor !== state.cursor) {
-      await database.syncState.put({ ...state, cursor })
+    if (cursor !== state.cursor || state.serverGeneration !== serverGeneration) {
+      await database.syncState.put({ ...state, cursor, serverGeneration })
     }
     return { pushed, pulled: ops.length }
   } catch (e) {
@@ -96,7 +110,7 @@ export async function syncGroup(
       // Server lost the group entirely: re-register (may mint a new share
       // code) and re-seed the full log from this device.
       const info = await client.registerGroup(groupId)
-      await resetForReseed(groupId, database, info.shareCode)
+      await resetForReseed(groupId, database, info.shareCode, info.serverGeneration)
       return syncGroup(groupId, database, true)
     }
     throw e
@@ -139,6 +153,7 @@ export async function shareGroup(groupId: string, database: ArdoiseDB = db): Pro
     groupId,
     cursor: existing?.cursor ?? 0,
     shareCode: info.shareCode,
+    serverGeneration: info.serverGeneration,
   })
   await syncGroup(groupId, database)
   return info.shareCode
@@ -150,7 +165,12 @@ export async function joinGroup(shareCode: string, database: ArdoiseDB = db): Pr
   const info = await client.resolveCode(shareCode.trim().toUpperCase())
   const existing = await database.syncState.get(info.groupId)
   if (!existing) {
-    await database.syncState.put({ groupId: info.groupId, cursor: 0, shareCode: info.shareCode })
+    await database.syncState.put({
+      groupId: info.groupId,
+      cursor: 0,
+      shareCode: info.shareCode,
+      serverGeneration: info.serverGeneration,
+    })
   }
   await syncGroup(info.groupId, database)
   return info.groupId

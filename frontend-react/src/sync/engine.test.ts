@@ -17,6 +17,7 @@ function installMockServer() {
   const codes = new Map<string, string>() // shareCode -> groupId
   const ops: (WireOp & { seq: number })[] = []
   let seq = 0
+  let generationNumber = 1
   const server = {
     offline: false,
     authFail: false,
@@ -29,6 +30,7 @@ function installMockServer() {
       codes.clear()
       ops.length = 0
       seq = 0
+      generationNumber++
     },
     /** Restore from an older backup: everything after `toSeq` is lost and the
      *  autoincrement counter rewinds with it. Groups/codes survive. */
@@ -63,13 +65,13 @@ function installMockServer() {
         groups.set(gid, { shareCode })
         codes.set(shareCode, gid)
       }
-      return json({ groupId: gid, shareCode: groups.get(gid)!.shareCode })
+      return json({ groupId: gid, shareCode: groups.get(gid)!.shareCode, serverGeneration: `gen-${generationNumber}` })
     }
 
     if ((m = path.match(/^\/api\/v1\/groups\/resolve\/(.+)$/)) && method === 'GET') {
       const gid = codes.get(m[1])
       if (!gid) return json({ detail: 'not found' }, 404)
-      return json({ groupId: gid, shareCode: m[1] })
+      return json({ groupId: gid, shareCode: m[1], serverGeneration: `gen-${generationNumber}` })
     }
 
     if ((m = path.match(/^\/api\/v1\/groups\/([^/]+)\/ops$/)) && method === 'POST') {
@@ -98,7 +100,11 @@ function installMockServer() {
       const groupMax = ops.filter((o) => o.groupId === gid).reduce((mx, o) => Math.max(mx, o.seq), 0)
       const cursor = rows.length ? rows[rows.length - 1].seq : groupMax
       // strip seq from the wire payload, like the real server
-      return json({ ops: rows.map(({ seq: _seq, ...w }) => w), cursor })
+      return json({
+        ops: rows.map(({ seq: _seq, ...w }) => w),
+        cursor,
+        serverGeneration: `gen-${generationNumber}`,
+      })
     }
 
     return json({ detail: 'unhandled' }, 404)
@@ -311,6 +317,41 @@ describe('self-healing after server data loss', () => {
     const db2 = await freshDb()
     await joinGroup(state!.shareCode, db2)
     expect(foldOps(await db2.operations.toArray())).toEqual(foldOps(await db1.operations.toArray()))
+  })
+
+  it('detects a wiped DB even when its new cursor overtakes the old cursor', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    const code = await shareGroup(g, db1)
+    const db2 = await freshDb()
+    await joinGroup(code, db2)
+
+    // Only device 2 knows this expense; its old-server cursor becomes 5.
+    const members2 = Object.values(foldOps(await db2.operations.toArray()).members)
+    await addExpense(
+      g,
+      { description: 'Unique B', amountCents: 700, paidBy: members2[0].id, spentAt: '2026-07-14', shares: [{ memberId: members2[0].id, weight: 1 }] },
+      db2,
+    )
+    await syncGroup(g, db2)
+
+    // Device 1 has enough local-only changes that its reseed creates a new max
+    // cursor above 5. Cursor comparison alone would make device 2 skip seq 1..5
+    // and never re-upload its unique expense.
+    for (let i = 0; i < 8; i++) {
+      const members1 = Object.values(foldOps(await db1.operations.toArray()).members)
+      await addExpense(
+        g,
+        { description: `A${i}`, amountCents: 100, paidBy: members1[0].id, spentAt: '2026-07-14', shares: [{ memberId: members1[0].id, weight: 1 }] },
+        db1,
+      )
+    }
+    server.wipe()
+    await syncGroup(g, db1)
+    expect(Math.max(...server.ops.map((o) => o.seq))).toBeGreaterThan(5)
+
+    await syncGroup(g, db2)
+    expect(server.ops.some((o) => o.payload.description === 'Unique B')).toBe(true)
   })
 
   it('detects a rewound server (restore from an older backup) and re-seeds the lost ops', async () => {

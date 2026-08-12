@@ -19,7 +19,8 @@ import { syncPushGroups } from '@/lib/push'
 import { createGroup } from '@/sync/ops'
 import { joinGroup } from '@/sync/engine'
 import { SyncError } from '@/sync/client'
-import { AUTH_SUCCESS_EVENT, promptForApiKey } from '@/lib/auth'
+import { AUTH_SUCCESS_EVENT, promptForApiKey, setApiKey } from '@/lib/auth'
+import { parseAutomaticInvite } from '@/lib/invite'
 import { avatarColor } from '@/lib/avatar'
 import { exportAllJson, importJsonExport } from '@/lib/export'
 import { formatCents } from '@/lib/format'
@@ -82,12 +83,20 @@ export function Groups() {
   const handleJoinRef = useRef(handleJoin)
   handleJoinRef.current = handleJoin
 
-  // Auto-join when arriving via an invite link (/?join=CODE).
+  // Auto-join from either the legacy /?join=CODE link or the QR fragment.
+  // The QR carries the server password in its fragment, which is never sent in
+  // HTTP requests; erase it from the address bar before making the join call.
   useEffect(() => {
-    const code = searchParams.get('join')
+    const automatic = parseAutomaticInvite(window.location.hash)
+    const code = automatic?.joinCode ?? searchParams.get('join')
     if (code && !autoJoined.current) {
       autoJoined.current = true
-      setSearchParams({}, { replace: true })
+      if (automatic) {
+        if (automatic.apiKey) setApiKey(automatic.apiKey)
+        window.history.replaceState(null, '', window.location.pathname)
+      } else {
+        setSearchParams({}, { replace: true })
+      }
       void handleJoin(code)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
