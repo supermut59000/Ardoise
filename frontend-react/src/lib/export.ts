@@ -36,6 +36,26 @@ export function buildJsonExport(groupName: string, ops: Operation[], shared: Sha
 const ENTITIES = new Set(['group', 'member', 'expense', 'settlement'])
 const ACTIONS = new Set(['create', 'update', 'delete'])
 
+/** Money fields must be real numbers: a string amountCents would concatenate in
+ *  balances ("0" + "100" = "0100") and silently unbalance the group. The app
+ *  never produces this, but an imported hand-edited export could. */
+function hasValidPayloadMoney(payload: Record<string, unknown>): boolean {
+  if (
+    payload.amountCents !== undefined &&
+    (typeof payload.amountCents !== 'number' || !Number.isFinite(payload.amountCents))
+  ) {
+    return false
+  }
+  if (payload.shares !== undefined) {
+    if (!Array.isArray(payload.shares)) return false
+    for (const s of payload.shares) {
+      if (typeof s !== 'object' || s === null) return false
+      if (typeof (s as { weight?: unknown }).weight !== 'number') return false
+    }
+  }
+  return true
+}
+
 function isValidOp(o: unknown): o is Operation {
   if (typeof o !== 'object' || o === null) return false
   const r = o as Record<string, unknown>
@@ -46,6 +66,7 @@ function isValidOp(o: unknown): o is Operation {
     ENTITIES.has(r.entity as string) &&
     ACTIONS.has(r.action as string) &&
     typeof r.payload === 'object' && r.payload !== null &&
+    hasValidPayloadMoney(r.payload as Record<string, unknown>) &&
     typeof r.actor === 'string' &&
     typeof r.lamport === 'number' && Number.isFinite(r.lamport) &&
     typeof r.createdAt === 'number' && Number.isFinite(r.createdAt)

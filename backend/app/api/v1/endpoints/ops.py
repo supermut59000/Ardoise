@@ -24,9 +24,19 @@ def push_ops(
     accepted, cursor = SyncService(db).push(group_id, body.ops)
     # Fan out "group changed" notifications AFTER the response, never blocking
     # sync. Only for genuinely new ops, only for live-sized batches (a reseed
-    # after self-heal would otherwise ping everyone with a meaningless count).
-    if accepted and len(accepted) <= NOTIFY_MAX_BATCH and push_enabled():
-        background_tasks.add_task(notify_task, group_id, accepted[0].actor, accepted)
+    # after self-heal would otherwise ping everyone with a meaningless count),
+    # and never for a client-flagged reseed push. Every author in the batch is
+    # excluded: a self-heal re-push can carry ops from several devices, and
+    # excluding only the first would let the healing device notify itself.
+    if (
+        accepted
+        and len(accepted) <= NOTIFY_MAX_BATCH
+        and push_enabled()
+        and not body.reseed
+    ):
+        background_tasks.add_task(
+            notify_task, group_id, {o.actor for o in accepted}, accepted
+        )
     return PushResponse(accepted=len(accepted), cursor=cursor)
 
 

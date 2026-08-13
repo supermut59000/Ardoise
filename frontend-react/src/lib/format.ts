@@ -5,14 +5,30 @@ export function formatCents(cents: number, currency = 'EUR'): string {
 
 /**
  * Parse a user-typed amount ("12,50", "12.5", "12") into integer cents.
- * Returns null if it is not a valid non-negative number.
+ * Returns null if it is not a valid non-negative number, or if it carries more
+ * than two decimals: money has cents, not thousandths, and a third decimal
+ * would round inconsistently through float math ("1,005" -> 1,00 instead of
+ * 1,01), so it is rejected instead of silently mis-rounded.
  */
 export function parseAmountToCents(input: string): number | null {
   const normalized = input.trim().replace(/\s/g, '').replace(',', '.')
   if (normalized === '' || !/^\d*\.?\d*$/.test(normalized)) return null
+  if (normalized.includes('.') && normalized.split('.')[1].length > 2) return null
   const value = Number(normalized)
   if (!Number.isFinite(value) || value < 0) return null
   return Math.round(value * 100)
+}
+
+/**
+ * Cap a user-typed number at two decimal digits as they type ("4,005" ->
+ * "4,00"), so a third decimal never reaches the money math. Preserves the
+ * separator the user typed (French comma or dot) and mid-edit states ("12,").
+ */
+export function limitTwoDecimals(input: string): string {
+  const sep = input.includes(',') ? ',' : '.'
+  const [int, frac] = input.split(sep)
+  if (frac === undefined || frac.length <= 2) return input
+  return `${int}${sep}${frac.slice(0, 2)}`
 }
 
 export function formatDate(iso: string): string {

@@ -40,4 +40,6 @@ class GroupService:
         return self.db.get(Group, group_id)
 
     def resolve(self, share_code: str) -> Group | None:
-        return self.db.query(Group).filter(Group.share_code == share_code.upper()).first()
+        return (
+            self.db.query(Group).filter(Group.share_code == share_code.upper()).first()
+        )

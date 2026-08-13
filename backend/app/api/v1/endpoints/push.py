@@ -15,7 +15,9 @@ def _require_push_enabled() -> None:
     if not push_enabled():
         # 503: the instance simply has no VAPID key configured. The client
         # hides the notification menu entry when it sees this.
-        raise HTTPException(status_code=503, detail="Notifications non configurees sur ce serveur")
+        raise HTTPException(
+            status_code=503, detail="Notifications non configurees sur ce serveur"
+        )
 
 
 @router.get("/vapid-public-key", response_model=VapidPublicKeyOut)

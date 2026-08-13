@@ -15,7 +15,7 @@ import { EmojiPickerDialog } from '@/components/expense/EmojiPickerDialog'
 import { BrandMark } from '@/components/ui/brand-mark'
 import { suggestEmoji } from '@/lib/emoji'
 import { findBrand, suggestBrand } from '@/lib/brands'
-import { formatCents, parseAmountToCents, todayIso } from '@/lib/format'
+import { formatCents, limitTwoDecimals, parseAmountToCents, todayIso } from '@/lib/format'
 import { tapFeedback } from '@/lib/haptics'
 import { useMe } from '@/lib/me'
 
@@ -308,7 +308,7 @@ export function ExpenseForm() {
 
         <div className="space-y-1.5">
           <label htmlFor="amount" className="text-sm font-medium">Montant</label>
-          <Input id="amount" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,00" inputMode="decimal" autoFocus={!isEdit} />
+          <Input id="amount" value={amount} onChange={(e) => setAmount(limitTwoDecimals(e.target.value))} placeholder="0,00" inputMode="decimal" autoFocus={!isEdit} />
         </div>
 
         <div className="space-y-1.5">
@@ -390,7 +390,15 @@ export function ExpenseForm() {
                       )}
                       <Input
                         value={partInput(m.id)}
-                        onChange={(e) => setTyped((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                        onChange={(e) =>
+                          // Parts are ratios and may legitimately have decimals
+                          // ("1,5"), but percents/exact money are capped at two
+                          // decimals so a third never reaches the split math.
+                          setTyped((prev) => ({
+                            ...prev,
+                            [m.id]: splitMode === 'shares' ? e.target.value : limitTwoDecimals(e.target.value),
+                          }))
+                        }
                         inputMode="decimal"
                         className="h-9 w-20 shrink-0 text-right"
                         aria-label={`${m.name} ${splitMode}`}

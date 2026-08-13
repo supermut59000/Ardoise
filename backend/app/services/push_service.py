@@ -10,6 +10,7 @@ Disabled cleanly when VAPID_PRIVATE_KEY is unset: notify() is a no-op and the
 subscribe endpoints answer 503. pywebpush/py_vapid are imported lazily so the
 backend still boots on an image built before this feature.
 """
+
 import json
 import logging
 from functools import lru_cache
@@ -92,7 +93,9 @@ def build_body(ops: List[OperationWire], lookup: Lookup) -> str:
         p = op.payload or {}
 
         def known(field: str) -> str:
-            return str(p.get(field) or lookup(op.entity, op.entity_id, field) or "").strip()
+            return str(
+                p.get(field) or lookup(op.entity, op.entity_id, field) or ""
+            ).strip()
 
         if op.entity == "expense":
             desc = known("description")
@@ -106,14 +109,22 @@ def build_body(ops: List[OperationWire], lookup: Lookup) -> str:
         if op.entity == "settlement":
             if op.action == "create":
                 amt = _amount(p)
-                return f"Remboursement enregistre : {amt}" if amt else "Remboursement enregistre"
+                return (
+                    f"Remboursement enregistre : {amt}"
+                    if amt
+                    else "Remboursement enregistre"
+                )
             return "Remboursement annule"
         if op.entity == "member":
             name = known("name")
             if op.action == "create":
-                return f"Nouveau participant : {name}" if name else "Nouveau participant"
+                return (
+                    f"Nouveau participant : {name}" if name else "Nouveau participant"
+                )
             if op.action == "update":
-                return f"Participant renomme : {name}" if name else "Participant renomme"
+                return (
+                    f"Participant renomme : {name}" if name else "Participant renomme"
+                )
             return f"Participant retire : {name}" if name else "Participant retire"
         if op.entity == "group":
             if op.action == "update" and p.get("name"):
@@ -143,7 +154,9 @@ def _send(subscription: PushSubscription, payload: str) -> Optional[int]:
         return None
     except WebPushException as e:
         status = e.response.status_code if e.response is not None else 0
-        logger.warning("web push failed (%s) for %s", status, subscription.endpoint[:60])
+        logger.warning(
+            "web push failed (%s) for %s", status, subscription.endpoint[:60]
+        )
         return status
 
 
@@ -153,26 +166,31 @@ def _send(subscription: PushSubscription, payload: str) -> Optional[int]:
 NOTIFY_MAX_BATCH = 50
 
 
-def notify_task(group_id: str, actor: str, ops: List[OperationWire]) -> None:
+def notify_task(group_id: str, excluded_actors: set, ops: List[OperationWire]) -> None:
     """FastAPI background-task entrypoint: runs after the sync response is sent,
     with its own DB session (the request's session is closed by then)."""
     from app.core.database import SessionLocal
 
     db = SessionLocal()
     try:
-        notify_group(db, group_id, actor, ops)
+        notify_group(db, group_id, excluded_actors, ops)
     except Exception:
         logger.exception("push notification fan-out failed")
     finally:
         db.close()
 
 
-def notify_group(db: Session, group_id: str, actor: str, ops: List[OperationWire]) -> int:
+def notify_group(
+    db: Session, group_id: str, excluded_actors: set, ops: List[OperationWire]
+) -> int:
     """
-    Notify every subscribed device that follows `group_id`, except the author's
-    own device. Dead subscriptions (404/410 from the push service) are pruned.
-    Runs as a FastAPI background task, after the push response is sent, so a
-    slow push service never delays sync. Returns the number of sends attempted.
+    Notify every subscribed device that follows `group_id`, except the devices
+    that authored the ops. A batch may carry ops from several devices (e.g. a
+    self-heal re-push of ops pulled from peers), so every author's device is
+    excluded; excluding only one would let the healing device notify itself.
+    Dead subscriptions (404/410 from the push service) are pruned. Runs as a
+    FastAPI background task, after the push response is sent, so a slow push
+    service never delays sync. Returns the number of sends attempted.
     """
     if not push_enabled() or not ops:
         return 0
@@ -190,7 +208,7 @@ def notify_group(db: Session, group_id: str, actor: str, ops: List[OperationWire
     targets = [
         s
         for s in db.query(PushSubscription).all()
-        if s.device_id != actor and group_id in (s.group_ids or [])
+        if s.device_id not in excluded_actors and group_id in (s.group_ids or [])
     ]
     sent = 0
     for sub in targets:

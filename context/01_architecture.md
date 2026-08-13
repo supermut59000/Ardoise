@@ -16,7 +16,7 @@
 | PWA / SW | **vite-plugin-pwa** (Workbox) | Replaces hand-rolled sw.js: precache, update flow, Background Sync where supported |
 | Backend | FastAPI + SQLAlchemy 2.0 + Pydantic 2 + Alembic | Same as VroomVroom |
 | DB | MariaDB (or Postgres) | Same as VroomVroom; op log is a simple append table |
-| Auth / sharing | **Share-code join + automatic QR** (see 03, decisions D6/D39) | Manual fallback plus one-scan setup for trusted friends |
+| Auth / sharing | **Share-code join + automatic QR** (see 03, decisions D6/D39/D40) | Manual fallback plus one-scan setup; QR is a reusable trusted-friends bearer credential, not a one-time token |
 | Deploy | Docker Compose on homelab, reverse proxy, `*.home.ouiouibaguette.fr` | Same as VroomVroom |
 
 ## Domain model
@@ -54,19 +54,22 @@ tricount-clone/
 ├── backend/                 # mirrors VroomVroom layout
 │   └── app/
 │       ├── main.py
-│       ├── api/v1/endpoints/{groups,ops,export}.py
-│       ├── models/{group,member,expense,operation,settlement}.py
-│       ├── schemas/...
-│       ├── services/{group_service,sync_service,balance_service}.py
+│       ├── api/v1/endpoints/{groups,ops,push,system}.py
+│       ├── models/{group,operation,push_subscription,server_meta}.py
+│       │     # member/expense/settlement have NO server model: they live only
+│       │     # in the operation log, folded by the clients (D5/D12)
+│       ├── schemas/{sync,push}.py
+│       ├── services/{group_service,sync_service,push_service,server_meta_service}.py
 │       └── core/{config,database}.py
 ├── frontend-react/
 │   └── src/
-│       ├── db/dexie.ts               # IndexedDB schema (state cache + op log)
-│       ├── sync/{engine.ts,ops.ts}   # generate ops, push/pull, fold
+│       ├── db/dexie.ts               # IndexedDB schema (op log + sync state)
+│       ├── sync/{engine.ts,client.ts,ops.ts,fold.ts,operation.ts}  # sync + fold
 │       ├── domain/{balances.ts,simplify-debts.ts,split.ts}  # pure, unit-tested
-│       ├── hooks/{use-group,use-expenses,use-sync}.ts
-│       ├── components/{expense,group,balance,ui}/
-│       └── pages/{Groups,GroupDetail,AddExpense,Balances,Settle}.tsx
+│       ├── lib/{format,auth,me,export,push,invite,emoji,brands,...}.ts
+│       ├── hooks/{use-group-data,use-groups,use-sync,use-push,use-automatic-invite,...}.ts
+│       ├── components/{expense,group,layout,ui}/
+│       └── pages/{Groups,GroupDetail,ExpenseForm}.tsx
 └── docker-compose.yml
 ```
 

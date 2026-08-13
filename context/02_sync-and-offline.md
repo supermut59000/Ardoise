@@ -42,6 +42,7 @@ The devices hold the full log, so any server-side data loss is recoverable from 
 - **Server generation changed** (DB wiped/recreated): every database lifetime has a UUID returned by register/resolve/pull. A device that sees a different UUID marks its whole local log unsynced, resets the cursor, and re-pushes everything. This is required even when the recreated server's new sequence has already overtaken the device's old cursor. Each device heals itself the same way, so the server converges back to the union of everyone's history. A new share code may be minted (old invite links die; the app shows the current code in Partager).
 - **404 on push/pull** is the fast path for the same wipe: the client re-registers the same group id and performs the generation reset immediately.
 - **Pull cursor below ours** (same DB generation restored from an older backup): the client detects the rewind and does the same reset-and-reseed, restoring the ops the backup lost.
+- **Deleting a shared group stops tracking it once the tombstone reaches the server**: the sync engine drops the group's syncState row when its delete op is pushed (or pulled from a peer). The row survives until then so the delete is still pushed; dropping it means a later server wipe cannot re-register the dead group or mint it a new share code.
 
 Both paths are idempotent (`op_id` dedup) and covered by engine tests (wipe and rewind scenarios).
 
@@ -56,8 +57,11 @@ Both paths are idempotent (`op_id` dedup) and covered by engine tests (wipe and 
 
 The relay is also the natural fan-out point: when a device pushes new ops, the
 server notifies every subscribed device following that group, except the
-author's own (`device_id == actor`). Batches above 50 accepted ops stay silent
-(that is a self-heal reseed or an import, not live activity). The custom
+devices that authored the ops (a batch may carry ops from several devices, so
+every author's device is excluded, not just the first). Batches above 50
+accepted ops stay silent (that is a catch-up, not live activity), and a push
+flagged `reseed` (the client re-pushing its whole log after a server wipe)
+never notifies: a heal is not activity. The custom
 service worker ([src/sw.ts](../frontend-react/src/sw.ts), injectManifest) shows
 the notification and opens the group on tap. Subscriptions are device-scoped
 (like identity, D23) and carry the device's shared-group list, re-sent on app

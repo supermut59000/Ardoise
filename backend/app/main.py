@@ -42,7 +42,9 @@ def health_check():
     except Exception:
         # 503, not 200: the Docker healthcheck and any monitor must see a DB
         # outage as unhealthy, not a green "unhealthy" body.
-        return JSONResponse(status_code=503, content={"status": "unhealthy", "db": "unreachable"})
+        return JSONResponse(
+            status_code=503, content={"status": "unhealthy", "db": "unreachable"}
+        )
     finally:
         # Close even when execute() throws, or each probe during an outage
         # leaks a session.

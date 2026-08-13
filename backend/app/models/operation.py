@@ -27,12 +27,14 @@ class Operation(Base):
     op_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     group_id: Mapped[str] = mapped_column(String(36), index=True)
 
-    entity: Mapped[str] = mapped_column(String(20))      # expense | member | settlement | group
+    entity: Mapped[str] = mapped_column(
+        String(20)
+    )  # expense | member | settlement | group
     entity_id: Mapped[str] = mapped_column(String(36))
-    action: Mapped[str] = mapped_column(String(10))      # create | update | delete
+    action: Mapped[str] = mapped_column(String(10))  # create | update | delete
     payload: Mapped[dict] = mapped_column(JSON)
 
-    actor: Mapped[str] = mapped_column(String(64))       # device / member id
+    actor: Mapped[str] = mapped_column(String(64))  # device / member id
     lamport: Mapped[int] = mapped_column(BigInteger)
     created_at: Mapped[int] = mapped_column(BigInteger)  # client wall clock (ms epoch)
     received_at: Mapped[datetime] = mapped_column(

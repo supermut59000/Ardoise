@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { dayLabel, parseAmountToCents, formatCents, todayIso } from './format'
+import { dayLabel, limitTwoDecimals, parseAmountToCents, formatCents, todayIso } from './format'
 
 describe('todayIso', () => {
   afterEach(() => {
@@ -41,11 +41,19 @@ describe('parseAmountToCents', () => {
     expect(parseAmountToCents('1 000')).toBe(100000)
   })
 
-  it('rounds to the nearest cent (no floating drift)', () => {
-    // 12.345 -> 1234.5 -> rounds to 1235
-    expect(parseAmountToCents('12.345')).toBe(1235)
-    // classic float trap: 0.1 + 0.2; here just 35.35
+  it('rounds two-decimal amounts to the nearest cent (no floating drift)', () => {
+    // classic float trap: 35.35 * 100 = 3535.0000000000005 -> Math.round fixes it
     expect(parseAmountToCents('35.35')).toBe(3535)
+    expect(parseAmountToCents('0,99')).toBe(99)
+  })
+
+  it('rejects more than two decimals instead of mis-rounding them', () => {
+    // A third decimal used to round through float math: "1,005" * 100 =
+    // 100.49999999999999 -> 100 (1,00 EUR instead of 1,01). Money has cents,
+    // not thousandths, so it is blocked outright.
+    expect(parseAmountToCents('1,005')).toBeNull()
+    expect(parseAmountToCents('12.345')).toBeNull()
+    expect(parseAmountToCents('4,005')).toBeNull()
   })
 
   it('rejects empty, negative, and non-numeric input', () => {
@@ -61,6 +69,20 @@ describe('parseAmountToCents', () => {
     const cents = parseAmountToCents('42,00')!
     expect(cents).toBe(4200)
     expect(formatCents(cents)).toContain('42,00')
+  })
+})
+
+describe('limitTwoDecimals', () => {
+  it('caps a third decimal while preserving the typed separator', () => {
+    expect(limitTwoDecimals('4,005')).toBe('4,00')
+    expect(limitTwoDecimals('4.005')).toBe('4.00')
+  })
+
+  it('leaves one or two decimals and mid-edit states untouched', () => {
+    expect(limitTwoDecimals('12')).toBe('12')
+    expect(limitTwoDecimals('12,')).toBe('12,')
+    expect(limitTwoDecimals('12,5')).toBe('12,5')
+    expect(limitTwoDecimals('12,50')).toBe('12,50')
   })
 })
 

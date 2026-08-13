@@ -71,6 +71,24 @@ describe('parseJsonExport', () => {
     expect(invalid).toBe(3)
   })
 
+  it('skips ops whose payload money fields are not numbers', () => {
+    // A hand-edited export with amountCents as a string would concatenate in
+    // balances ("0"+"100"="0100") and break the net-to-zero guarantee; import
+    // must refuse the op instead of replaying the corruption.
+    const text = JSON.stringify({
+      app: 'ardoise',
+      operations: [
+        wireOp('ok'),
+        wireOp('str-amount', { payload: { amountCents: '100' } }),
+        wireOp('str-weight', { payload: { amountCents: 100, shares: [{ memberId: 'a', weight: '1' }] } }),
+        wireOp('nan-amount', { payload: { amountCents: Number.NaN } }),
+      ],
+    })
+    const { ops, invalid } = parseJsonExport(text)
+    expect(ops.map((o) => o.opId)).toEqual(['ok'])
+    expect(invalid).toBe(3)
+  })
+
   it('extracts valid shared refs and drops malformed ones', () => {
     const text = JSON.stringify({
       app: 'ardoise',
@@ -123,6 +141,18 @@ describe('importJsonExport', () => {
     const result = await importJsonExport(v1, d)
     expect(result).toEqual({ imported: 1, existing: 0, invalid: 0, relinked: 0 })
     expect(await d.syncState.count()).toBe(0)
+  })
+
+  it('refuses to import ops with non-numeric money (no string-concat balances)', async () => {
+    const d = new ArdoiseDB('export-money-import-test')
+    await d.open()
+    const text = JSON.stringify({
+      app: 'ardoise',
+      operations: [wireOp('str-amount', { payload: { amountCents: '100' } })],
+    })
+    const result = await importJsonExport(text, d)
+    expect(result).toEqual({ imported: 0, existing: 0, invalid: 1, relinked: 0 })
+    expect(await d.operations.count()).toBe(0)
   })
 })
 

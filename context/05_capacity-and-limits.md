@@ -51,7 +51,7 @@ Conclusion: instant for decades of normal use. If a group ever crosses
 | Push batch size | 500 ops (~460 KB worst case) | `PUSH_BATCH`, sync/engine.ts |
 | nginx request body cap | 10 MB | frontend-react/nginx.conf |
 | Sync request timeout | 15 s | sync/client.ts |
-| Notification silence threshold | > 50 accepted ops (heal/import, not activity) | `NOTIFY_MAX_BATCH`, push_service.py |
+| Notification silence threshold | > 50 accepted ops, or any `reseed`-flagged push (heal/catch-up, not activity) | `NOTIFY_MAX_BATCH` + `reseed`, push_service.py / ops.py |
 | Push notification TTL | 1 h | push_service.py |
 | String columns | group/entity ids 36, endpoint 500 | models |
 

@@ -97,6 +97,10 @@ and persistent storage, and Caddy provides it.
 3. For the simplest friend setup, let them scan the QR code shown in **Partager**. It carries the group code and your current server password in the URL fragment, joins automatically, and removes the credentials from the address bar before contacting the server. The fragment is not sent to Caddy/nginx access logs. Treat the QR like the shared password and show it only to trusted people.
 4. The manual fallback remains: friends open the same URL, enter the password once, and **Rejoindre** with the code.
 
+### QR security boundary
+
+The QR is convenient, not one-time or bulletproof. It is a reusable bearer credential containing the instance-wide `API_KEY` plus one group code. URL fragments keep it out of normal HTTP/proxy logs, the app removes it from the address bar immediately, and HTTPS protects it in transit. Those measures do not protect a screenshot, camera/scanner history, browser extension, compromised phone, or anyone who can see the QR. It has no independent expiry or revocation; rotate `API_KEY` to invalidate it, which also signs every existing device out of sync. Use it only face-to-face with trusted friends. A public or externally forwarded invitation needs expiring, one-time, group-scoped server tokens instead.
+
 ## Notes
 
 - The password gates **sync only** (`register`/`resolve`/`push`/`pull`). The static app
@@ -115,6 +119,9 @@ and persistent storage, and Caddy provides it.
   LAN for the Caddy LXC. Only Caddy should be reachable from the WAN.
 - App updates: after a redeploy, open apps show a "Nouvelle version disponible" toast
   and reload on tap (never mid-edit); freshly opened apps get the new version directly.
+- D41 (2026-08-13) changed backend dependencies (fastapi 0.141.1, starlette >= 1.0.1 for
+  CVE-2026-48710) and the sync wire (`reseed` flag on push). Rebuild the backend image
+  (`docker compose up -d --build`); no migration is needed.
 
 ## Hardening for internet exposure (defense in depth)
 

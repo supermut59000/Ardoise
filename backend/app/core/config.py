@@ -7,7 +7,9 @@ class Settings(BaseSettings):
     # API
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Ardoise API"
-    PROJECT_DESCRIPTION: str = "Sync relay for the Ardoise shared-expenses PWA (operation log)"
+    PROJECT_DESCRIPTION: str = (
+        "Sync relay for the Ardoise shared-expenses PWA (operation log)"
+    )
     VERSION: str = "0.1.0"
 
     # Database (MariaDB). Must be set in .env

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { ArdoiseDB } from '@/db/dexie'
 import { foldOps } from './fold'
-import { addExpense, addMember, addSettlement, createGroup } from './ops'
+import { addExpense, addMember, addSettlement, createGroup, deleteGroup } from './ops'
 import { activeSettlements } from './fold'
 import { PUSH_BATCH, countUnsyncedFor, countUnsyncedShared, joinGroup, leaveGroup, shareGroup, syncAllGroups, syncGroup } from './engine'
 import type { WireOp } from './client'
@@ -22,6 +22,7 @@ function installMockServer() {
     offline: false,
     authFail: false,
     ops,
+    groups, // live reference so tests can assert what is (not) registered
     requests: 0,
     pushCalls: 0,
     /** Total server data loss: DB volume wiped / recreated from scratch. */
@@ -425,6 +426,39 @@ describe('leaveGroup (this device only)', () => {
     // the server kept everything: re-joining brings the full history back
     await joinGroup(code, db1)
     expect(await db1.operations.where('groupId').equals(g).count()).toBe(4)
+  })
+})
+
+describe('deleting a shared group stops tracking it once the tombstone syncs', () => {
+  it('keeps the syncState row until the delete op reaches the server, then drops it', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    await shareGroup(g, db1)
+    expect(await db1.syncState.get(g)).toBeDefined()
+
+    await deleteGroup(g, db1)
+    // While unsynced the row must survive, or the delete op would never be
+    // pushed (syncAllGroups iterates syncState rows).
+    expect(await db1.syncState.get(g)).toBeDefined()
+
+    await syncGroup(g, db1)
+    expect(await db1.syncState.get(g)).toBeUndefined()
+  })
+
+  it('does not re-register a deleted group after a later server wipe', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    await shareGroup(g, db1)
+    await deleteGroup(g, db1)
+    await syncGroup(g, db1)
+    expect(await db1.syncState.get(g)).toBeUndefined()
+
+    // Homelab disaster: DB volume recreated. With no syncState row left, the
+    // device has nothing to re-register: the dead group is not resurrected on
+    // the server (and no new share code is minted for it).
+    server.wipe()
+    await syncAllGroups(db1)
+    expect(server.groups.has(g)).toBe(false)
   })
 })
 

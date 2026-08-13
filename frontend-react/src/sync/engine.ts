@@ -19,14 +19,20 @@ export interface SyncSummary {
 export const PUSH_BATCH = 500
 
 /** Push this group's unsynced ops in batches, marking each batch synced as it
- *  lands (a crash between batches only re-pushes, which the server dedups). */
-async function pushUnsynced(groupId: string, database: ArdoiseDB): Promise<number> {
+ *  lands (a crash between batches only re-pushes, which the server dedups).
+ *  `reseed` marks a self-heal re-push of the whole log, which the server must
+ *  not treat as live activity (no notification fan-out). */
+async function pushUnsynced(
+  groupId: string,
+  database: ArdoiseDB,
+  reseed = false,
+): Promise<number> {
   const unsynced = (await database.operations.where('groupId').equals(groupId).toArray())
     .filter((o) => o.synced === 0)
     .sort((a, b) => a.lamport - b.lamport)
   for (let i = 0; i < unsynced.length; i += PUSH_BATCH) {
     const batch = unsynced.slice(i, i + PUSH_BATCH)
-    await client.pushOps(groupId, batch.map(toWire))
+    await client.pushOps(groupId, batch.map(toWire), reseed)
     await database.operations
       .where('opId')
       .anyOf(batch.map((o) => o.opId))
@@ -50,6 +56,17 @@ async function resetForReseed(
   })
 }
 
+/** True once a group-delete op for this group has reached the server (pushed
+ *  here or pulled from a peer): the group is gone for everyone, and the device
+ *  can stop tracking it. The syncState row must survive until then, or the
+ *  delete op would never be pushed. */
+async function groupDeleteSynced(database: ArdoiseDB, groupId: string): Promise<boolean> {
+  const ops = await database.operations.where('groupId').equals(groupId).toArray()
+  return ops.some(
+    (o) => o.entity === 'group' && o.entityId === groupId && o.action === 'delete' && o.synced === 1,
+  )
+}
+
 /**
  * Sync one group: push everything we have not yet pushed, then pull everything
  * new since our cursor and fold it in. Safe to call repeatedly and concurrently
@@ -71,13 +88,14 @@ export async function syncGroup(
   groupId: string,
   database: ArdoiseDB = db,
   healed = false,
+  reseed = false,
 ): Promise<SyncResult> {
   const state = await database.syncState.get(groupId)
   if (!state) return { pushed: 0, pulled: 0 }
 
   try {
     // 1) Push unsynced local ops (batched).
-    const pushed = await pushUnsynced(groupId, database)
+    const pushed = await pushUnsynced(groupId, database, reseed)
 
     // 2) Pull new ops from peers and fold them in.
     const { ops, cursor, serverGeneration } = await client.pullOps(groupId, state.cursor)
@@ -87,7 +105,7 @@ export async function syncGroup(
     // generation mismatch always replays the full local log before ingesting.
     if (state.serverGeneration && serverGeneration !== state.serverGeneration && !healed) {
       await resetForReseed(groupId, database, state.shareCode, serverGeneration)
-      return syncGroup(groupId, database, true)
+      return syncGroup(groupId, database, true, true)
     }
 
     if (ops.length > 0) {
@@ -99,10 +117,17 @@ export async function syncGroup(
     if (cursor < state.cursor && !healed) {
       // Same database restored from an older backup: re-seed both directions.
       await resetForReseed(groupId, database, state.shareCode, serverGeneration)
-      return syncGroup(groupId, database, true)
+      return syncGroup(groupId, database, true, true)
     }
     if (cursor !== state.cursor || state.serverGeneration !== serverGeneration) {
       await database.syncState.put({ ...state, cursor, serverGeneration })
+    }
+    // A group deleted (here or by a peer) stops being tracked once its tombstone
+    // is on the server: an orphan row would re-register the dead group on every
+    // future server wipe (B3). The row survives until then so the delete op is
+    // still pushed on a later pass.
+    if (await groupDeleteSynced(database, groupId)) {
+      await database.syncState.delete(groupId)
     }
     return { pushed, pulled: ops.length }
   } catch (e) {
@@ -111,7 +136,7 @@ export async function syncGroup(
       // code) and re-seed the full log from this device.
       const info = await client.registerGroup(groupId)
       await resetForReseed(groupId, database, info.shareCode, info.serverGeneration)
-      return syncGroup(groupId, database, true)
+      return syncGroup(groupId, database, true, true)
     }
     throw e
   }

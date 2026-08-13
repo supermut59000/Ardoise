@@ -71,7 +71,10 @@ class TestPushPull:
     def test_duplicate_within_single_request_counted_once(self, client):
         register(client)
         ops = [make_op("dup", "g1", 1), make_op("dup", "g1", 1)]
-        assert client.post("/api/v1/groups/g1/ops", json={"ops": ops}).json()["accepted"] == 1
+        assert (
+            client.post("/api/v1/groups/g1/ops", json={"ops": ops}).json()["accepted"]
+            == 1
+        )
 
     def test_pull_since_cursor_returns_only_newer(self, client):
         register(client)
@@ -87,19 +90,30 @@ class TestPushPull:
         # push out of lamport order; server orders by its own seq (insertion)
         client.post("/api/v1/groups/g1/ops", json={"ops": [make_op("o1", "g1", 5)]})
         client.post("/api/v1/groups/g1/ops", json={"ops": [make_op("o2", "g1", 2)]})
-        seqs = [o["opId"] for o in client.get("/api/v1/groups/g1/ops?since=0").json()["ops"]]
+        seqs = [
+            o["opId"] for o in client.get("/api/v1/groups/g1/ops?since=0").json()["ops"]
+        ]
         assert seqs == ["o1", "o2"]
 
     def test_two_devices_pull_union(self, client):
         register(client)
-        client.post("/api/v1/groups/g1/ops", json={"ops": [make_op("a1", "g1", 1, actor="A")]})
-        client.post("/api/v1/groups/g1/ops", json={"ops": [make_op("b1", "g1", 1, actor="B")]})
-        ids = {o["opId"] for o in client.get("/api/v1/groups/g1/ops?since=0").json()["ops"]}
+        client.post(
+            "/api/v1/groups/g1/ops", json={"ops": [make_op("a1", "g1", 1, actor="A")]}
+        )
+        client.post(
+            "/api/v1/groups/g1/ops", json={"ops": [make_op("b1", "g1", 1, actor="B")]}
+        )
+        ids = {
+            o["opId"] for o in client.get("/api/v1/groups/g1/ops?since=0").json()["ops"]
+        }
         assert ids == {"a1", "b1"}
 
     def test_empty_push_is_ok(self, client):
         register(client)
-        assert client.post("/api/v1/groups/g1/ops", json={"ops": []}).json()["accepted"] == 0
+        assert (
+            client.post("/api/v1/groups/g1/ops", json={"ops": []}).json()["accepted"]
+            == 0
+        )
 
     def test_pull_ahead_of_server_returns_real_max(self, client):
         """

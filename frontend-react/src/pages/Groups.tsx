@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Wallet, ChevronRight, Menu, Sun, Moon, Download, Upload, LogIn, DownloadCloud, KeyRound, Users, Bell, BellOff } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
@@ -15,12 +15,12 @@ import { MemberAvatar } from '@/components/ui/member-avatar'
 import { useGroups } from '@/hooks/use-groups'
 import { useInstallPrompt } from '@/hooks/use-install-prompt'
 import { usePush } from '@/hooks/use-push'
+import { useAutomaticInvite } from '@/hooks/use-automatic-invite'
 import { syncPushGroups } from '@/lib/push'
 import { createGroup } from '@/sync/ops'
 import { joinGroup } from '@/sync/engine'
 import { SyncError } from '@/sync/client'
-import { AUTH_SUCCESS_EVENT, promptForApiKey, setApiKey } from '@/lib/auth'
-import { parseAutomaticInvite } from '@/lib/invite'
+import { AUTH_SUCCESS_EVENT, promptForApiKey } from '@/lib/auth'
 import { avatarColor } from '@/lib/avatar'
 import { exportAllJson, importJsonExport } from '@/lib/export'
 import { formatCents } from '@/lib/format'
@@ -29,7 +29,6 @@ import { tapFeedback } from '@/lib/haptics'
 export function Groups() {
   const groups = useGroups()
   const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
   const { resolvedTheme, setTheme } = useTheme()
   const { isStandalone, canInstall, isIOS, promptInstall } = useInstallPrompt()
   const push = usePush()
@@ -39,7 +38,6 @@ export function Groups() {
   const [joining, setJoining] = useState(false)
   const [installHelpOpen, setInstallHelpOpen] = useState(false)
   const isDark = resolvedTheme === 'dark'
-  const autoJoined = useRef(false)
   // A join interrupted by the password gate; retried once the key is accepted.
   const pendingJoin = useRef<string | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
@@ -83,24 +81,12 @@ export function Groups() {
   const handleJoinRef = useRef(handleJoin)
   handleJoinRef.current = handleJoin
 
-  // Auto-join from either the legacy /?join=CODE link or the QR fragment.
-  // The QR carries the server password in its fragment, which is never sent in
-  // HTTP requests; erase it from the address bar before making the join call.
-  useEffect(() => {
-    const automatic = parseAutomaticInvite(window.location.hash)
-    const code = automatic?.joinCode ?? searchParams.get('join')
-    if (code && !autoJoined.current) {
-      autoJoined.current = true
-      if (automatic) {
-        if (automatic.apiKey) setApiKey(automatic.apiKey)
-        window.history.replaceState(null, '', window.location.pathname)
-      } else {
-        setSearchParams({}, { replace: true })
-      }
-      void handleJoin(code)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // Auto-join from either the legacy /?join=CODE link or the QR fragment, on
+  // mount AND on hashchange (a same-tab navigation to /#join=... must not leave
+  // the password in the address bar un-consumed). The QR's fragment carries the
+  // server password, which is never sent in HTTP requests; the hook erases it
+  // from the address bar before joining.
+  useAutomaticInvite((code) => void handleJoin(code))
 
   // Once the password is accepted, retry the join that hit the 401.
   useEffect(() => {

@@ -30,16 +30,21 @@ class OperationWire(BaseModel):
 
 class PushRequest(BaseModel):
     ops: List[OperationWire]
+    # Set by the client when re-pushing its whole log after server data loss
+    # (self-heal reseed). Real activity stays silent only above the batch cap,
+    # but a heal is NOT live activity and must never ring anyone's phone, so it
+    # opts out of the notification fan-out entirely.
+    reseed: bool = False
 
 
 class PushResponse(BaseModel):
     accepted: int  # how many were newly stored (duplicates are ignored)
-    cursor: int    # current max server seq for this group
+    cursor: int  # current max server seq for this group
 
 
 class PullResponse(BaseModel):
     ops: List[OperationWire]
-    cursor: int    # max seq returned; pass back as ?since= next time
+    cursor: int  # max seq returned; pass back as ?since= next time
     server_generation: str = Field(serialization_alias="serverGeneration")
     model_config = ConfigDict(populate_by_name=True)
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Dev entrypoint for the Ardoise API."""
+
 import uvicorn
 
 from app.core.config import settings

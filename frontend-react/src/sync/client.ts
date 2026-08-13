@@ -100,10 +100,11 @@ export function resolveCode(shareCode: string): Promise<GroupInfo> {
 export function pushOps(
   groupId: string,
   ops: WireOp[],
+  reseed = false,
 ): Promise<{ accepted: number; cursor: number }> {
   return request(`/groups/${groupId}/ops`, {
     method: 'POST',
-    body: JSON.stringify({ ops }),
+    body: JSON.stringify({ ops, reseed }),
   })
 }
 

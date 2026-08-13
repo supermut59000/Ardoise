@@ -19,7 +19,9 @@ class SyncService:
         )
         return int(value or 0)
 
-    def push(self, group_id: str, ops: List[OperationWire]) -> Tuple[List[OperationWire], int]:
+    def push(
+        self, group_id: str, ops: List[OperationWire]
+    ) -> Tuple[List[OperationWire], int]:
         """
         Store incoming ops idempotently (dedup by op_id). Returns
         (newly_accepted_ops, current_max_cursor); duplicates are ignored. The
