@@ -1,6 +1,6 @@
 # 04 - Roadmap and build status
 
-Each phase is independently usable. Current status: **Phase 4 complete + audit/UX passes D22-D39, deployed on the homelab** (2026-07-16). Next: feedback from real use with friends (user will direct).
+Each phase is independently usable. Current status: **Phase 4 complete + audit/UX passes D22-D41, deployed on the homelab** (2026-08-13). Next: feedback from real use with friends (user will direct).
 
 ## Phase 0 - Scaffold (done 2026-07-13)
 
@@ -55,9 +55,9 @@ Delivered (2026-07-14):
 - Tests: 79 FE + 13 backend. tsc clean, build emits SW, dev server transforms all modules.
 - Status: **complete**.
 
-## Resilience pass: "bulletproof homelab" (done 2026-07-14, strengthened 2026-08-12)
+## Resilience pass: "bulletproof homelab" (done 2026-07-14, strengthened 2026-08-12 and 2026-08-13)
 
-See decisions D29 and D39. Sync self-heals after any server-side data loss (404 wipe or cursor rewind after a restore-from-backup): the devices re-register and re-seed the full log automatically. Requests time out at 15s (no more wedged sync engine), pushes are batched (500 ops) under a raised nginx body limit, PWA updates prompt instead of force-reloading, an invite-link join interrupted by the password gate retries automatically, "Regler" is double-tap-proof, dates are local-timezone (not UTC), `/health` returns 503 on DB outage. New features: JSON import by replay (home menu) and "Quitter le groupe (cet appareil)" for shared groups. 117 FE + 22 backend tests.
+See decisions D29, D39 and D41. Sync self-heals after any server-side data loss (404 wipe or cursor rewind after a restore-from-backup): the devices re-register and re-seed the full log automatically, now guarded by a database-generation UUID so a recreated server's overtaken cursor can never skip history (D39). Requests time out at 15s (no more wedged sync engine), pushes are batched (500 ops) under a raised nginx body limit, PWA updates prompt instead of force-reloading, an invite-link join interrupted by the password gate retries automatically, "Regler" is double-tap-proof, dates are local-timezone (not UTC), `/health` returns 503 on DB outage. New features: JSON import by replay (home menu, money payloads validated as numbers since D41) and "Quitter le groupe (cet appareil)" for shared groups. QR invites (D39/D40) join on fresh load and same-tab navigation, erasing credentials from the address bar both ways. 174 FE + 45 backend tests.
 
 ## UX pass for non-technical users (done 2026-07-14)
 

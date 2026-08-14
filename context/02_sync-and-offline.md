@@ -65,7 +65,8 @@ never notifies: a heal is not activity. The custom
 service worker ([src/sw.ts](../frontend-react/src/sw.ts), injectManifest) shows
 the notification and opens the group on tap. Subscriptions are device-scoped
 (like identity, D23) and carry the device's shared-group list, re-sent on app
-start and after share/join/leave. Requires `VAPID_PRIVATE_KEY` server-side;
+start and after share/join/leave. Dead subscriptions are pruned when the push
+service answers 404/410. Requires `VAPID_PRIVATE_KEY` server-side;
 without it push is cleanly off and the menu entry hides.
 
 Message shape (D31): **title = the group's name**, body = what happened,
