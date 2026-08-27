@@ -24,6 +24,8 @@ T() { printf '\n\033[1m### %s\033[0m\n' "$1"; }
 C() { curl -sS --max-time 60 -w '  [HTTP %{http_code}]' "$@"; }
 NOW() { date +%s.%N; }
 BC="${BACKEND_CONTAINER:-ardoise-backend}"
+if docker info >/dev/null 2>&1; then D="docker"; else D="sudo docker"; fi
+if ! $D info >/dev/null 2>&1; then echo "docker injoignable (sudo?) — phases A/D inutilisables"; D="docker"; fi
 
 # ------------------------------------------------- découverte backend URL
 B=""
@@ -47,7 +49,7 @@ C "$B/api/v1/groups/register" -X POST -H "$H" -H "$J" -d "{\"groupId\":\"$G\"}";
 
 # ---------------------------------------------------------------- A. SSRF
 T "A. SSRF — le serveur appelle-t-il l'URL d'endpoint qu'on choisit ?"
-docker exec -i "$BC" python3 - <<'PY' &
+$D exec -i "$BC" python3 - <<'PY' &
 import socket
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", 8099)); s.listen(4); s.settimeout(25)
@@ -69,7 +71,7 @@ C "$B/api/v1/groups/$G/ops" -X POST -H "$H" -H "$J" \
   -d "{\"ops\":[{\"opId\":\"$(U)\",\"groupId\":\"$G\",\"entity\":\"group\",\"entityId\":\"$G\",\"action\":\"create\",\"payload\":{\"name\":\"RT-SSRF\"},\"actor\":\"redteam\",\"lamport\":1,\"createdAt\":1}]}"; echo
 sleep 2
 echo "-- ce que le listener a reçu (preuve SSRF si non vide) :"
-HIT="$(docker exec "$BC" cat /tmp/rt-hit.txt 2>/dev/null)"
+HIT="$($D exec "$BC" cat /tmp/rt-hit.txt 2>/dev/null)"
 if [ -n "$HIT" ]; then
   echo "  >>> REÇU DEDANS LE CONTENEUR BACKEND <<<"
   printf '%s' "$HIT" | head -c 500; echo
@@ -107,7 +109,7 @@ T "D. DOUBLET — endpoint 'hold' x16 → épuisement du pool DB (5+10) ?"
 echo "-- latence de base (pull, DB) :"
 curl -sS -o /dev/null -w '  baseline: %{time_total}s [%{http_code}]\n' "$B/api/v1/groups/$G/ops?since=0" -H "$H"
 echo "-- hold server dans le conteneur (45 s, auto-quit) :"
-docker exec -i "$BC" python3 - <<'PY' &
+$D exec -i "$BC" python3 - <<'PY' &
 import socket, time
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", 8098)); s.listen(64); s.settimeout(45)
@@ -163,5 +165,5 @@ echo
 
 # ---------------------------------------------------------------- cleanup
 printf '\n\033[1m--- NETTOYAGE (MariaDB) ---\033[0m\n'
-printf "DELETE FROM operations WHERE group_id = '%s';\nDELETE FROM push_subscriptions WHERE device_id = '%s';\nDELETE FROM groups WHERE id = '%s';\nrm -f /tmp/rt-*.txt /tmp/rt-*.log /tmp/rt-*.json\ndocker exec %s rm -f /tmp/rt-hit.txt\n" "$G" "$DEV1" "$G" "$BC"
+printf "DELETE FROM operations WHERE group_id = '%s';\nDELETE FROM push_subscriptions WHERE device_id = '%s';\nDELETE FROM groups WHERE id = '%s';\nrm -f /tmp/rt-*.txt /tmp/rt-*.log /tmp/rt-*.json\n$D exec %s rm -f /tmp/rt-hit.txt\n" "$G" "$DEV1" "$G" "$BC"
 echo "(les listeners s'auto-tuent en 25/45 s — rien à faire)"
