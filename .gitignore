@@ -17,3 +17,9 @@ backend/.env
 
 # OS
 .DS_Store
+
+# Red team / probe artifacts
+rt-*.txt
+rt-*.log
+rt-*.json
+probe-big.json
