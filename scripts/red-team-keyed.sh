@@ -47,6 +47,8 @@ rm -f /tmp/rt-*.txt /tmp/rt-*.log /tmp/rt-*.json
 G="$(U)"
 DEV1="redteam-$(U)"
 echo "groupe poubelle: $G"
+echo "-- register (obligatoire avant push, flux de partage) :"
+C "$B/api/v1/groups/register" -X POST -H "$H" -H "$J" -d "{\"groupId\":\"$G\"}"; echo
 
 # ---------------------------------------------------------------- A. SSRF
 T "A. SSRF — le serveur appelle-t-il l'URL d'endpoint qu'on choisit ?"
