@@ -26,7 +26,7 @@ NOW() { date +%s.%N; }
 
 # ------------------------------------------------- découverte backend URL
 B=""
-CANDS="$BACKEND http://127.0.0.1:8065 http://127.0.0.1:8000 http://127.0.0.1:3060"
+CANDS="${BACKEND:-} http://127.0.0.1:8065 http://127.0.0.1:8000 http://127.0.0.1:3060"
 LANIP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$LANIP" ] && CANDS="$CANDS http://$LANIP:8065 http://$LANIP:3060"
 for c in $CANDS; do
