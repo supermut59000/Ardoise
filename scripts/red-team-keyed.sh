@@ -63,8 +63,10 @@ except socket.timeout:
     pass
 PY
 $D cp /tmp/rt_listen_a.py "$BC":/tmp/rt_listen_a.py
-$D exec -d "$BC" python3 /tmp/rt_listen_a.py
+$D exec "$BC" python3 /tmp/rt_listen_a.py > /tmp/rt-ssrf-stderr.txt 2>&1 &
+LSSRF=$!
 sleep 1
+kill -0 $LSSRF 2>/dev/null || { echo "  !!! listener mort au démarrage :"; cat /tmp/rt-ssrf-stderr.txt; }
 SUB='{"endpoint":"http://127.0.0.1:8099/ssrf-proof","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
 echo "-- subscribe endpoint=127.0.0.1:8099 (boucle locale DU CONTENEUR backend) :"
 C "$B/api/v1/push/subscribe" -X POST -H "$H" -H "$J" -d "$SUB"; echo
@@ -82,7 +84,7 @@ else
   echo "  (rien reçu — décharge des logs backend, fan-out) :"
   $D logs "$BC" --since 5m 2>&1 | grep -iE "web push|fan-out|traceback" | tail -10
   echo "  -- processus listeners dans le conteneur :"
-  $D exec "$BC" sh -c 'ps aux 2>/dev/null | grep -v grep | grep rt_ || echo "(aucun process listener)"'
+  kill $LSSRF 2>/dev/null
 fi
 
 # ---------------------------------------------------------------- B. Overflow
@@ -127,8 +129,10 @@ while time.time() < end:
 print(n, "connexions holdées")
 PY
 $D cp /tmp/rt_hold.py "$BC":/tmp/rt_hold.py
-$D exec -d "$BC" python3 /tmp/rt_hold.py
+$D exec "$BC" python3 /tmp/rt_hold.py > /tmp/rt-hold-stderr.txt 2>&1 &
+LHOLD=$!
 sleep 1
+kill -0 $LHOLD 2>/dev/null || { echo "  !!! hold mort au démarrage :"; cat /tmp/rt-hold-stderr.txt; }
 SUBH='{"endpoint":"http://127.0.0.1:8098/hold","keys":{"p256dh":"BOrHnQdBa3A0vHmR6GfV8mYqQ3sK9wZpLxT2rUvN4cDe","auth":"k8Jq2mN5xR7tY1zA"},"deviceId":"'"$DEV1"'","groupIds":["'"$G"'"]}'
 C "$B/api/v1/push/subscribe" -X POST -H "$H" -H "$J" -d "$SUBH" > /dev/null
 echo "-- 16 pushes en parallèle (chacun spawn un fan-out bloqué sur le hold) :"
