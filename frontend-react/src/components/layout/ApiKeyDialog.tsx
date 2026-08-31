@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { checkApiKey } from '@/sync/client'
+import { checkApiKey, type AuthCheckResult } from '@/sync/client'
 import { getApiKey, notifyAuthSuccess, setApiKey } from '@/lib/auth'
 import { syncAllGroups } from '@/sync/engine'
 
@@ -20,7 +20,7 @@ interface Props {
 export function ApiKeyDialog({ open, onOpenChange }: Props) {
   const [value, setValue] = useState('')
   const [checking, setChecking] = useState(false)
-  const [error, setError] = useState(false)
+  const [error, setError] = useState<AuthCheckResult | null>(null)
   const alreadySet = Boolean(getApiKey())
 
   async function handleSubmit(e: React.FormEvent) {
@@ -29,10 +29,10 @@ export function ApiKeyDialog({ open, onOpenChange }: Props) {
     if (!key) return
     setChecking(true)
     setError(false)
-    const ok = await checkApiKey(key)
+    const result = await checkApiKey(key)
     setChecking(false)
-    if (!ok) {
-      setError(true)
+    if (result !== 'ok') {
+      setError(result)
       return
     }
     setApiKey(key)
@@ -62,7 +62,12 @@ export function ApiKeyDialog({ open, onOpenChange }: Props) {
             autoFocus
             aria-label="Mot de passe du serveur"
           />
-          {error && <p className="text-sm text-destructive">Mot de passe incorrect ou serveur injoignable.</p>}
+          {error === 'rejected' && (
+            <p className="text-sm text-destructive">Mot de passe incorrect.</p>
+          )}
+          {error === 'unreachable' && (
+            <p className="text-sm text-destructive">Serveur injoignable. Verifiez votre connexion puis reessayez.</p>
+          )}
           <Button type="submit" className="w-full" disabled={checking || !value.trim()}>
             {checking ? 'Verification...' : 'Valider'}
           </Button>

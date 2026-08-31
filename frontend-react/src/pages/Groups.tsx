@@ -125,9 +125,12 @@ export function Groups() {
     if (!trimmed) return
     setCreating(true)
     try {
-      await createGroup({ name: trimmed })
+      const groupId = await createGroup({ name: trimmed })
       setName('')
       tapFeedback()
+      // Land inside the new group: its empty state ("Ajoutez d'abord des
+      // participants") is the onboarding the user just signed up for.
+      navigate(`/g/${groupId}`)
     } catch {
       toast.error('Impossible de creer le groupe')
     } finally {

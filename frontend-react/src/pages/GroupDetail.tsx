@@ -56,7 +56,17 @@ export function GroupDetail() {
   }, [groupId, shareOpen]) // re-check after the share dialog may have registered it
 
   if (data === undefined) {
-    return <p className="mx-auto max-w-md p-6 text-sm text-muted-foreground">Chargement...</p>
+    return (
+      <main className="mx-auto w-full max-w-md px-4 pb-28 pt-6" aria-hidden="true">
+        <div className="mb-4 h-8 w-2/3 animate-pulse rounded-lg bg-muted" />
+        <div className="mb-4 h-24 animate-pulse rounded-2xl bg-muted" />
+        <ul className="space-y-2">
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="h-16 animate-pulse rounded-xl bg-muted" />
+          ))}
+        </ul>
+      </main>
+    )
   }
   if (!data.group) {
     return (
@@ -113,14 +123,24 @@ export function GroupDetail() {
     if (settling) return // a double tap must not record the settlement twice
     setSettling(true)
     try {
-      await addSettlement(groupId, {
+      const settlementId = await addSettlement(groupId, {
         fromMemberId: t.fromMemberId,
         toMemberId: t.toMemberId,
         amountCents: t.amountCents,
         settledAt: todayIso(),
       })
       tapFeedback()
-      toast.success('Remboursement enregistre')
+      // A settlement attests a real-world payment: a wrong tap pollutes every
+      // device's balances, so the toast carries an undo (same pattern as
+      // expense deletion).
+      toast.success('Remboursement enregistre', {
+        action: {
+          label: 'Annuler',
+          onClick: () => {
+            void handleUnsettle(settlementId)
+          },
+        },
+      })
     } catch {
       toast.error('Enregistrement impossible')
     } finally {
@@ -251,6 +271,8 @@ export function GroupDetail() {
         <button
           type="button"
           role="tab"
+          id="tab-expenses"
+          aria-controls="panel-expenses"
           aria-selected={tab === 'expenses'}
           onClick={() => setTab('expenses')}
           className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'expenses' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
@@ -260,6 +282,8 @@ export function GroupDetail() {
         <button
           type="button"
           role="tab"
+          id="tab-balances"
+          aria-controls="panel-balances"
           aria-selected={tab === 'balances'}
           onClick={() => setTab('balances')}
           className={`cursor-pointer rounded-md py-1.5 text-sm font-medium transition-colors ${tab === 'balances' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
@@ -269,7 +293,7 @@ export function GroupDetail() {
       </div>
 
       {tab === 'expenses' ? (
-        <section key="expenses" className="space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+        <section key="expenses" role="tabpanel" id="panel-expenses" aria-labelledby="tab-expenses" className="space-y-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
           {expenses.length === 0 ? (
             <div className="mt-10 flex flex-col items-center gap-3 text-center">
               <div className="flex size-14 items-center justify-center rounded-2xl bg-accent text-accent-foreground">
@@ -338,7 +362,7 @@ export function GroupDetail() {
           )}
         </section>
       ) : (
-        <section key="balances" className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+        <section key="balances" role="tabpanel" id="panel-balances" aria-labelledby="tab-balances" className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
           {/* Personal headline: the one number the local user actually cares about */}
           {myBalance && (
             <Card

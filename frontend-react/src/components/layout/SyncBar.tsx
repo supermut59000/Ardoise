@@ -37,10 +37,11 @@ export function SyncBar({ online, syncing, pending }: Props) {
     )
   }
 
+  // In normal flow (not fixed): a fixed strip overlaps the page header, and
+  // the body already carries the safe-area top padding in standalone mode.
   return (
     <div
-      className={`fixed inset-x-0 top-0 z-50 flex items-center justify-center gap-2 py-1 text-center text-xs font-medium ${tone}`}
-      style={{ paddingTop: 'max(env(safe-area-inset-top), 0.25rem)' }}
+      className={`flex items-center justify-center gap-2 px-4 py-1.5 text-center text-xs font-medium ${tone}`}
       role="status"
     >
       {content}

@@ -60,15 +60,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** Validate a candidate password against the server. Used by the key dialog. */
-export async function checkApiKey(key: string): Promise<boolean> {
+export type AuthCheckResult = 'ok' | 'rejected' | 'unreachable'
+
+export async function checkApiKey(key: string): Promise<AuthCheckResult> {
   try {
     const res = await fetch(`${API_BASE}/system/auth-check`, {
       signal: requestTimeout(),
       headers: { 'X-API-Key': key },
     })
-    return res.ok
+    return res.ok ? 'ok' : 'rejected'
   } catch {
-    return false
+    return 'unreachable'
   }
 }
 

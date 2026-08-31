@@ -67,7 +67,17 @@ export function ExpenseForm() {
   const [saving, setSaving] = useState(false)
 
   if (data === undefined) {
-    return <p className="mx-auto max-w-md p-6 text-sm text-muted-foreground">Chargement...</p>
+    return (
+      <main className="mx-auto w-full max-w-md px-4 pb-24 pt-6" aria-hidden="true">
+        <div className="mb-6 h-8 w-1/2 animate-pulse rounded-lg bg-muted" />
+        <div className="space-y-5">
+          <div className="h-11 animate-pulse rounded-md bg-muted" />
+          <div className="h-11 animate-pulse rounded-md bg-muted" />
+          <div className="h-11 animate-pulse rounded-md bg-muted" />
+          <div className="h-44 animate-pulse rounded-xl bg-muted" />
+        </div>
+      </main>
+    )
   }
   const members = data.members
   const existing = expenseId ? data.expenses.find((e) => e.id === expenseId) : undefined
@@ -440,15 +450,19 @@ export function ExpenseForm() {
           </div>
         </div>
 
-        <Button type="submit" size="lg" className="w-full" disabled={saving || Boolean(splitError)}>
-          {isEdit ? 'Enregistrer les modifications' : 'Enregistrer'}
-        </Button>
-
-        {isEdit && (
-          <Button type="button" variant="ghost" className="w-full text-destructive" onClick={handleDelete}>
-            <Trash2 className="size-4" /> Supprimer cette depense
+        {/* Sticky action bar: the core action must stay on screen no matter
+            how many split rows the form grows to. */}
+        <div className="sticky bottom-0 -mx-4 space-y-2 bg-background/95 px-4 pb-2 pt-3 backdrop-blur-sm">
+          <Button type="submit" size="lg" className="w-full" disabled={saving || Boolean(splitError)}>
+            {isEdit ? 'Enregistrer les modifications' : 'Enregistrer'}
           </Button>
-        )}
+
+          {isEdit && (
+            <Button type="button" variant="ghost" className="w-full text-destructive" onClick={handleDelete}>
+              <Trash2 className="size-4" /> Supprimer cette depense
+            </Button>
+          )}
+        </div>
       </form>
 
       <EmojiPickerDialog
