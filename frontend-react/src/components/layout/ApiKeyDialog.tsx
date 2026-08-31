@@ -28,7 +28,7 @@ export function ApiKeyDialog({ open, onOpenChange }: Props) {
     const key = value.trim()
     if (!key) return
     setChecking(true)
-    setError(false)
+    setError(null)
     const result = await checkApiKey(key)
     setChecking(false)
     if (result !== 'ok') {
