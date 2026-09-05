@@ -24,8 +24,10 @@ class OperationWire(BaseModel):
     action: Literal["create", "update", "delete"]
     payload: Dict[str, Any]
     actor: str = Field(max_length=64)
-    lamport: int
-    created_at: int = Field(alias="createdAt")
+    # Bounded to BIGINT: 10^40 passes unbounded int Pydantic, then MariaDB
+    # rejects it at commit -> 500 the client retries forever (red-team F8).
+    lamport: int = Field(ge=0, le=2**63 - 1)
+    created_at: int = Field(alias="createdAt", ge=0, le=2**63 - 1)
 
 
 class PushRequest(BaseModel):

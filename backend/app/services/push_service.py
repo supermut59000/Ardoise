@@ -150,6 +150,10 @@ def _send(subscription: PushSubscription, payload: str) -> Optional[int]:
             vapid_private_key=settings.VAPID_PRIVATE_KEY,
             vapid_claims={"sub": settings.VAPID_SUBJECT},
             ttl=3600,  # stale group-activity pings are worthless after an hour
+            # No timeout = a "hold" endpoint parks this background task (and
+            # its DB session) forever; 16 of them exhaust the pool and 500 the
+            # whole API (red-team F10). 5s: a real push service answers fast.
+            timeout=5,
         )
         return None
     except WebPushException as e:
