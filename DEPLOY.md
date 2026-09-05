@@ -111,10 +111,13 @@ The QR is convenient, not one-time or bulletproof. It is a reusable bearer crede
   backup, the phones detect it and automatically re-register and re-upload the full
   history (see context/02). The only visible effect of a full wipe is a new share code
   for each group (shown in Partager); old invite links stop working.
-- Back up the MariaDB volume (`tricount-clone_mariadb-data`) and/or use the in-app
-  JSON export; the JSON export is the full operation log and can be re-imported from
-  the home menu ("Importer un export (JSON)"), which replays it safely (duplicates
-  are ignored, imported changes re-sync to the server).
+- **No server-side backup needed: the phones are the backup.** Every device keeps
+  the full operation log locally and re-seeds a lost or stale server automatically.
+  For an offline copy, use the in-app JSON export (full operation log, re-importable
+  from the home menu: "Importer un export (JSON)"; it replays safely, duplicates are
+  ignored, imported changes re-sync to the server). If you ever do want a server-side
+  snapshot, the volume is `ardoise_mariadb-data` (`docker compose exec mariadb
+  mariadb-dump ardoise`); there is no automated backup by design.
 - Ports (see step 1): backend loopback-only, MariaDB unpublished, frontend on the
   LAN for the Caddy LXC. Only Caddy should be reachable from the WAN.
 - App updates: after a redeploy, open apps show a "Nouvelle version disponible" toast
