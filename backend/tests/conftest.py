@@ -5,8 +5,21 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401  (register models on Base.metadata)
+from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _dev_defaults():
+    # `settings` is a module-level singleton built from the container's env at
+    # import time; on a real instance that env carries API_KEY/VAPID keys, which
+    # would break the "disabled by default" tests. Pin dev defaults once so the
+    # suite is hermetic everywhere (tests that need other values set them
+    # themselves and restore them).
+    settings.API_KEY = ""
+    settings.VAPID_PRIVATE_KEY = ""
+    yield
 
 
 @pytest.fixture
