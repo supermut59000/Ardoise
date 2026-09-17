@@ -7,7 +7,7 @@ See [context/](context/) for architecture and decisions. Read [context/README.md
 ## Stack
 
 - **Frontend**: React 19 + TS + Vite + Tailwind v4 + shadcn/ui, Dexie (IndexedDB) for local-first storage with live queries, vite-plugin-pwa (custom service worker for Web Push).
-- **Backend**: FastAPI + SQLAlchemy 2.0 + Alembic + MariaDB. The backend is a sync relay over an append-only operation log; it never merges state.
+- **Backend**: FastAPI + SQLAlchemy 2.0 + Alembic + MariaDB. The backend is a sync relay over an append-only operation log; it never merges state. A Rust port of the same contract (axum + SQLite, one 3.6 MB binary, native Web Push sender) runs in parallel for A/B — see `rust/` and [context/06_rust-rewrite.md](context/06_rust-rewrite.md); the Python stack is the reference.
 - **Infra**: Docker Compose. Frontend on host port 3060, backend on 8065 (loopback only), MariaDB unpublished (reachable only over the compose network).
 
 ## Quick start (Docker)

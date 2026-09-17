@@ -105,6 +105,24 @@ and persistent storage, and Caddy provides it.
 
 The QR is convenient, not one-time or bulletproof. It is a reusable bearer credential containing the instance-wide `API_KEY` plus one group code. URL fragments keep it out of normal HTTP/proxy logs, the app removes it from the address bar immediately, and HTTPS protects it in transit. Those measures do not protect a screenshot, camera/scanner history, browser extension, compromised phone, or anyone who can see the QR. It has no independent expiry or revocation; rotate `API_KEY` to invalidate it, which also signs every existing device out of sync. Use it only face-to-face with trusted friends. A public or externally forwarded invitation needs expiring, one-time, group-scoped server tokens instead.
 
+## 6. Rust backend (optional, parallel A/B)
+
+An independent port of the same contract: axum + SQLite WAL, one 3.6 MB
+static binary, ~23 MB RAM, zero daemons, same `API_KEY`, and the same VAPID
+key as section 2 for push (wire output cross-checked byte-for-byte against
+pywebpush). It keeps its OWN database file; devices never mix both backends
+without a re-sync, and the Python stack stays the reference implementation.
+
+```bash
+cd rust && cargo build --release
+API_KEY="<same as docker>" VAPID_PRIVATE_KEY="<same as section 2>" \
+VAPID_SUBJECT="mailto:you@example.com" PORT=8001 \
+DATA_FILE=/var/lib/ardoise-rust.db ./target/release/ardoise
+```
+
+Benchmarks, footprint and the push cross-conformance protocol:
+[context/06_rust-rewrite.md](context/06_rust-rewrite.md).
+
 ## Notes
 
 - The password gates **sync only** (`register`/`resolve`/`push`/`pull`). The static app
