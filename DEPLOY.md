@@ -61,6 +61,10 @@ subscription (each user would have to toggle notifications off and on again).
 Leave it empty to run without notifications; everything else still works and
 the app hides the notification menu entry.
 
+The same key also enables push on the Rust backend (`rust/`): it parses the
+identical base64url 32-byte scalar, and its wire output was cross-checked
+byte-for-byte against pywebpush (`context/06_rust-rewrite.md`).
+
 Platform reality: Android and desktop browsers work everywhere; iPhones need
 iOS 16.4+ AND the app installed on the home screen (in Safari itself the menu
 shows "installer l'app d'abord"). Users enable notifications from the home

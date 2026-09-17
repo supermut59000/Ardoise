@@ -11,6 +11,9 @@ __pycache__/
 .pytest_cache/
 *.db
 
+# Rust
+rust/target/
+
 # Env / secrets
 .env
 backend/.env
