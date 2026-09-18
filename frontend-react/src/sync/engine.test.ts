@@ -75,9 +75,13 @@ function installMockServer() {
       return json({ groupId: gid, shareCode: m[1], serverGeneration: `gen-${generationNumber}` })
     }
 
-    if ((m = path.match(/^\/api\/v1\/groups\/([^/]+)\/ops$/)) && method === 'POST') {
+    if ((m = path.match(/^\/api\/v1\/groups\/([^/]+)\/sync$/)) && method === 'POST') {
+      // Push + pull in one round trip, like the real endpoint. The old
+      // separate POST/GET /ops routes are intentionally gone: a regression to
+      // the push-then-pull client would 404 here and fail loudly.
       const gid = m[1]
       if (!groups.has(gid)) return json({ detail: 'not registered' }, 404)
+      if (Number(body.since) < 0) return json({ detail: 'since must be >= 0' }, 422)
       server.pushCalls++
       let accepted = 0
       for (const o of body.ops as WireOp[]) {
@@ -85,14 +89,7 @@ function installMockServer() {
         ops.push({ ...o, seq: ++seq })
         accepted++
       }
-      const cursor = ops.filter((o) => o.groupId === gid).reduce((mx, o) => Math.max(mx, o.seq), 0)
-      return json({ accepted, cursor })
-    }
-
-    if ((m = path.match(/^\/api\/v1\/groups\/([^/]+)\/ops$/)) && method === 'GET') {
-      const gid = m[1]
-      if (!groups.has(gid)) return json({ detail: 'not registered' }, 404)
-      const since = Number(url.searchParams.get('since') ?? '0')
+      const since = Number(body.since)
       const rows = ops
         .filter((o) => o.groupId === gid && o.seq > since)
         .sort((a, b) => a.seq - b.seq)
@@ -102,6 +99,7 @@ function installMockServer() {
       const cursor = rows.length ? rows[rows.length - 1].seq : groupMax
       // strip seq from the wire payload, like the real server
       return json({
+        accepted,
         ops: rows.map(({ seq: _seq, ...w }) => w),
         cursor,
         serverGeneration: `gen-${generationNumber}`,
@@ -407,6 +405,48 @@ describe('push batching', () => {
     expect(server.ops.filter((o) => o.groupId === g)).toHaveLength(total)
     expect(server.pushCalls).toBeGreaterThan(1) // batched, not one giant body
     expect((await db1.operations.toArray()).filter((o) => o.synced === 0)).toHaveLength(0)
+  })
+})
+
+describe('single round trip', () => {
+  it('an idle sync is exactly one request', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    const code = await shareGroup(g, db1)
+    const db2 = await freshDb()
+    await joinGroup(code, db2)
+
+    // Nothing unsynced on db2: the sync pass must be ONE /sync call.
+    const before = server.requests
+    await syncGroup(g, db2)
+    expect(server.requests - before).toBe(1)
+  })
+
+  it('a change reaches the peer with one request per device', async () => {
+    const db1 = await freshDb()
+    const g = await seedGroup(db1)
+    const code = await shareGroup(g, db1)
+    const db2 = await freshDb()
+    await joinGroup(code, db2)
+
+    // db2 adds an expense: one /sync pushes it AND pulls (nothing new).
+    const members2 = Object.values(foldOps(await db2.operations.toArray()).members)
+    await addExpense(
+      g,
+      { description: 'Fast', amountCents: 100, paidBy: members2[0].id, spentAt: '2026-07-14', shares: [{ memberId: members2[0].id, weight: 1 }] },
+      db2,
+    )
+    const before2 = server.requests
+    await syncGroup(g, db2)
+    expect(server.requests - before2).toBe(1)
+    expect(server.ops.some((o) => o.payload.description === 'Fast')).toBe(true)
+
+    // db1 picks it up with its own single request.
+    const before1 = server.requests
+    await syncGroup(g, db1)
+    expect(server.requests - before1).toBe(1)
+    const s1 = foldOps(await db1.operations.toArray())
+    expect(Object.values(s1.expenses).some((e) => e.description === 'Fast')).toBe(true)
   })
 })
 

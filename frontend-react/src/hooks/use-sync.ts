@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { db } from '@/db/dexie'
+import * as client from '@/sync/client'
 import { countUnsyncedShared, syncAllGroups } from '@/sync/engine'
 import { LOCAL_CHANGE_EVENT } from '@/sync/events'
 import { promptForApiKey } from '@/lib/auth'
@@ -19,6 +21,10 @@ export function useSync() {
   const [pending, setPending] = useState(0)
   const running = useRef(false)
   const lastAuthPrompt = useRef(0)
+  // One live SSE stream per shared group (wake-up -> sync pass). The stream
+  // map lives in the effect below; the ref bridges it to the sync pass, which
+  // reconciles it after every run. The 20s polling stays as the fallback.
+  const reconcileStreams = useRef<() => void>(() => {})
 
   const refreshPending = useRef(async () => {
     try {
@@ -49,6 +55,7 @@ export function useSync() {
       running.current = false
       setSyncing(false)
       await refreshPending.current()
+      reconcileStreams.current()
     }
   })
 
@@ -69,6 +76,49 @@ export function useSync() {
       debounce = window.setTimeout(trigger, 800) // then push it promptly
     }
 
+    // Live wake-up: one SSE stream per shared group. On `event: op` the
+    // stream has told us something landed on the server, so run the normal
+    // sync pass (the wake-up carries no data). On stream end, reconnect with
+    // exponential backoff (1s -> 30s); the 20s polling below covers any gap.
+    const streams = new Map<string, AbortController>()
+    const streamLoop = (gid: string, ac: AbortController) => {
+      let delay = 1_000
+      void (async () => {
+        while (!ac.signal.aborted) {
+          try {
+            await client.openEventStream(gid, () => trigger(), ac.signal)
+            delay = 1_000 // clean close (server restart): retry promptly
+          } catch {
+            if (ac.signal.aborted) return
+          }
+          if (ac.signal.aborted) return
+          await new Promise((r) => setTimeout(r, delay))
+          delay = Math.min(delay * 2, 30_000)
+        }
+      })()
+    }
+    reconcileStreams.current = async () => {
+      let states: { groupId: string }[]
+      try {
+        states = await db.syncState.toArray()
+      } catch {
+        return
+      }
+      const ids = new Set(states.map((s) => s.groupId))
+      for (const [gid, ac] of streams) {
+        if (!ids.has(gid)) {
+          ac.abort() // left/deleted the group: drop its stream
+          streams.delete(gid)
+        }
+      }
+      for (const gid of ids) {
+        if (streams.has(gid)) continue
+        const ac = new AbortController()
+        streams.set(gid, ac)
+        streamLoop(gid, ac)
+      }
+    }
+
     trigger()
     void refreshPending.current()
     window.addEventListener('online', onOnline)
@@ -77,6 +127,7 @@ export function useSync() {
     window.addEventListener(LOCAL_CHANGE_EVENT, onLocalChange)
     const id = window.setInterval(trigger, 20_000)
     return () => {
+      for (const ac of streams.values()) ac.abort()
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)
       document.removeEventListener('visibilitychange', onVisible)

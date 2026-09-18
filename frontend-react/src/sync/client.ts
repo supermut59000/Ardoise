@@ -11,7 +11,7 @@ export interface GroupInfo {
 }
 
 // Configurable at build time; defaults to a same-origin /api/v1 (prod behind a proxy).
-const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1'
+export const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1'
 
 export class SyncError extends Error {
   status?: number
@@ -99,22 +99,84 @@ export function resolveCode(shareCode: string): Promise<GroupInfo> {
   return request<GroupInfo>(`/groups/resolve/${encodeURIComponent(shareCode)}`)
 }
 
-export function pushOps(
+/** One round trip: push `ops` and pull everything new since `since` in the
+ *  same request (replaces the old push-then-pull pair). `accepted` counts the
+ *  ops actually stored (duplicates are not re-stored but are still accepted). */
+export function syncOps(
   groupId: string,
   ops: WireOp[],
+  since: number,
   reseed = false,
-): Promise<{ accepted: number; cursor: number }> {
-  return request(`/groups/${groupId}/ops`, {
+): Promise<{ accepted: number; ops: WireOp[]; cursor: number; serverGeneration: string }> {
+  return request(`/groups/${groupId}/sync`, {
     method: 'POST',
-    body: JSON.stringify({ ops, reseed }),
+    body: JSON.stringify({ ops, since, reseed }),
   })
 }
 
-export function pullOps(
-  groupId: string,
-  since: number,
-): Promise<{ ops: WireOp[]; cursor: number; serverGeneration: string }> {
-  return request(`/groups/${groupId}/ops?since=${since}`)
+/**
+ * Live wake-up: `/groups/{id}/events` is an SSE stream on which the server
+ * sends a minimal `event: op` frame (`{"seq": N}`) whenever new ops land for
+ * the group. The frame carries only the wake-up, never the data: the caller
+ * re-syncs to get the actual ops. `EventSource` cannot send the X-API-Key
+ * header, hence fetch + ReadableStream.
+ *
+ * Resolves when the stream ends (server close, proxy idle timeout, network
+ * drop); the caller is expected to reconnect with backoff. Rejects on non-2xx
+ * (e.g. 401/404 as a SyncError). Aborting the signal ends the stream cleanly.
+ */
+export async function openEventStream(groupId: string, onOp: () => void, signal: AbortSignal): Promise<void> {
+  const key = getApiKey()
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}/groups/${encodeURIComponent(groupId)}/events`, {
+      signal,
+      headers: { Accept: 'text/event-stream', ...(key ? { 'X-API-Key': key } : {}) },
+    })
+  } catch (e) {
+    if (signal.aborted) return
+    throw new SyncError(e instanceof Error ? e.message : 'network error')
+  }
+  if (!res.ok || !res.body) throw new SyncError(`HTTP ${res.status}`, res.status)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  try {
+    await readLoop()
+  } catch (e) {
+    // Aborting ends the stream cleanly; anything else is a real error.
+    if (signal.aborted) return
+    throw e
+  } finally {
+    reader.releaseLock()
+  }
+
+  async function readLoop(): Promise<void> {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) return
+      buf += decoder.decode(value, { stream: true })
+      // Frames are separated by a blank line. A frame may arrive split across
+      // chunks, so buffer until the terminator is complete.
+      let nl: number
+      while ((nl = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, nl)
+        buf = buf.slice(nl + 2)
+        let event = 'message'
+        let data = ''
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        // Comments (": connected", ": keepalive") and lagged markers fall
+        // through: they set no event/data. Anything but a clean `op` wake-up
+        // (e.g. a lag marker) is covered by the re-sync itself + the polling
+        // fallback.
+        if (event === 'op' && data) onOp()
+      }
+    }
+  }
 }
 
 // ---- Web Push ----

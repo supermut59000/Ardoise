@@ -14,31 +14,44 @@ export interface SyncSummary {
   networkError: boolean // at least one group failed for a transient reason
 }
 
-/** Max ops per push request, so a long-offline device or a first share of a big
+/** Max ops per /sync request, so a long-offline device or a first share of a big
  *  group never exceeds the reverse proxy's body-size limit. */
 export const PUSH_BATCH = 500
 
 /** Push this group's unsynced ops in batches, marking each batch synced as it
- *  lands (a crash between batches only re-pushes, which the server dedups).
- *  `reseed` marks a self-heal re-push of the whole log, which the server must
- *  not treat as live activity (no notification fan-out). */
-async function pushUnsynced(
+ *  lands (a crash between batches only re-pushes, which the server dedups),
+ *  and pull new ops in the SAME round trip (`POST /sync`). With nothing to
+ *  push, one empty-batch call is a plain pull, so an idle sync is exactly one
+ *  request. `reseed` marks a self-heal re-push of the whole log, which the
+ *  server must not treat as live activity (no notification fan-out).
+ *  Returns the pulled data of the LAST batch (ops dedup makes the earlier
+ *  batches' pulls harmless). */
+async function pushAndPull(
   groupId: string,
   database: ArdoiseDB,
+  since: number,
   reseed = false,
-): Promise<number> {
+): Promise<{ pushed: number; ops: client.WireOp[]; cursor: number; serverGeneration: string }> {
   const unsynced = (await database.operations.where('groupId').equals(groupId).toArray())
     .filter((o) => o.synced === 0)
     .sort((a, b) => a.lamport - b.lamport)
+  const batches: client.WireOp[][] = []
   for (let i = 0; i < unsynced.length; i += PUSH_BATCH) {
-    const batch = unsynced.slice(i, i + PUSH_BATCH)
-    await client.pushOps(groupId, batch.map(toWire), reseed)
-    await database.operations
-      .where('opId')
-      .anyOf(batch.map((o) => o.opId))
-      .modify({ synced: 1 })
+    batches.push(unsynced.slice(i, i + PUSH_BATCH).map(toWire))
   }
-  return unsynced.length
+  if (batches.length === 0) batches.push([])
+  let last = { pushed: 0, ops: [] as client.WireOp[], cursor: since, serverGeneration: '' }
+  for (const batch of batches) {
+    const res = await client.syncOps(groupId, batch, since, reseed)
+    if (batch.length > 0) {
+      await database.operations
+        .where('opId')
+        .anyOf(batch.map((o) => o.opId))
+        .modify({ synced: 1 })
+    }
+    last = { pushed: last.pushed + batch.length, ...res }
+  }
+  return last
 }
 
 /** Re-seed a group after the server lost (part of) its data: forget the cursor
@@ -94,11 +107,14 @@ export async function syncGroup(
   if (!state) return { pushed: 0, pulled: 0 }
 
   try {
-    // 1) Push unsynced local ops (batched).
-    const pushed = await pushUnsynced(groupId, database, reseed)
-
-    // 2) Pull new ops from peers and fold them in.
-    const { ops, cursor, serverGeneration } = await client.pullOps(groupId, state.cursor)
+    // Push unsynced local ops and pull new ops from peers in the same
+    // round trip, then fold them in.
+    const { pushed, ops, cursor, serverGeneration } = await pushAndPull(
+      groupId,
+      database,
+      state.cursor,
+      reseed,
+    )
 
     // Sequence numbers restart after a DB wipe and can quickly overtake an old
     // cursor, so cursor comparison alone cannot identify a new database. A
