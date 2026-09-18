@@ -78,6 +78,12 @@ Rust + SQLite (script: `rust/capacity_rust.py`, same median-of-7 method).
 | Fresh join, 10 k-op group | 304 ms; 4.4 MB raw → **0.3 MB gzip-5** vs 1.8 s / 8.6 MB | ~6× faster on air, ~15× gzip on JSON |
 | Backend RAM | 24 MB, one binary, no daemon vs 76 + 78 MB | 6.4× less |
 
+The table above compares the OLD endpoints (push/pull). The 2026-09-18
+network contract (one `/sync` + SSE wake) is measured in the same shape by
+`rust/net_bench.py` (its table lives in fiche 05): E2E "peer up-to-date" is
+1.2 ms on Rust vs 8.6 ms on Python + SQLite — both single-digit milliseconds,
+versus up to 20 s worst case under the old poll.
+
 Client-side fold timings are UNCHANGED (same frontend, same fold.ts):
 1 k/5 k/10 k/20 k ops = 1.3 / 7.4 / 13.6 / 34.8 ms on the desktop (re-measured
 this session; phone 3-5× slower).
@@ -182,3 +188,7 @@ release binary, so build it explicitly first.
 Reproduce the A/B network parity: `cd rust && cargo build --release &&
 ../backend/.venv/bin/python -u parity_check.py` (starts one live server per
 backend on free ports, exits 0 on full parity, ~20 s).
+
+Reproduce the network-contract bench: `cd rust && cargo build --release &&
+../backend/.venv/bin/python -u net_bench.py` (seeds 10k ops per backend,
+median of 7, writes `/tmp/net-bench.json`, ~2 min).

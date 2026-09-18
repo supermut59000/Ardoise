@@ -20,20 +20,42 @@ Growth model: a very active group produces ~1 000 ops/year. Ten groups for
 five years is ~50 000 ops, ~75 MB. Storage is a non-issue. The phone keeps the
 same log in IndexedDB at a similar size (also a non-issue against quotas).
 
-## Sync timings (server side, loopback; add network RTT)
+## Sync timings
 
 Since 2026-09-18 the client uses ONE `POST /sync` round trip (push+pull
-combined) and an SSE wake-up stream (`/events`); the 20 s poll is now the
-fallback. `POST /sync` costs ≈ push + pull in the same request.
+combined) and a live SSE wake-up stream (`/events`): a peer change reaches
+the other device in one wake frame + one `/sync`, and the 20 s poll is now
+only the fallback. `POST /sync` costs ≈ push + pull in the same request.
+
+**New contract, measured 2026-09-18** (`rust/net_bench.py`, loopback,
+median of 7, 10 000-op group, both backends on SQLite):
+
+| Scenario | Python + SQLite | Rust + SQLite | ratio |
+|---|---|---|---|
+| Idle sync (the every-20 s fallback poll) | 6.8 ms | 0.57 ms | 11.9× |
+| Daily change, 1 op — one request instead of two | 7.6 ms | 0.68 ms | 11.2× |
+| 3 ops, one request | 8.6 ms | 0.60 ms | 14.3× |
+| 500-op batch (pull included) | 85 ms | 8.5 ms | 10.1× |
+| 10 000-op catch-up (20 × `/sync` of 500) | 1.17 s | 0.19 s | 6.1× |
+| 10 000-op fresh-join pull | 2.7 s, 9.4 MB raw → 0.80 MB gzip-5 | 0.50 s, same sizes | 5.4× |
+| **SSE wake: push completes → frame received** | 5.1 ms | 0.71 ms | 7.1× |
+| **E2E: peer up-to-date (wake + its `/sync`)** | **8.6 ms** | **1.2 ms** | 7.0× |
+
+That last row is the point: a change reaches the other device in single-digit
+milliseconds instead of up to 20 s (worst case of the old poll). The old
+contract's request cost on loopback was comparable (6.7 ms for push+pull);
+what the new contract kills is the *wait*, not the bytes.
+
+**Old contract (pre-2026-09-18, Python + MariaDB, 2026-07-14)** — kept for
+the reference stack; superseded by the table above:
 
 | Scenario | Measured |
 |---|---|
-| Up-to-date sync (empty push + pull, the every-20s fallback poll) | 13 ms |
-| Daily change (1-3 ops: one `/sync` request instead of two) | 20-50 ms |
-| 500-op push batch (one `/sync` per 500, pull included) | ~175 ms |
-| 10 000-op catch-up (20 `/sync` requests of 500) | 3.5 s total |
+| Up-to-date pull (the every-20s poll) | 13 ms |
+| Daily push (1-3 ops, one batch) | 20-50 ms |
+| 500-op push batch | ~175 ms |
+| 10 000-op catch-up push (20 batches) | 3.5 s total |
 | Fresh join of a 10 000-op group | one 8.6 MB response, 1.8 s (nginx gzips JSON ~5x, so ~1.5-2 MB over the air) |
-| SSE wake-up (idle stream, one frame on new ops) | in-process fan-out, no SQL on the wake-up path |
 
 ## Client-side fold (recomputed per change while a group is open)
 
