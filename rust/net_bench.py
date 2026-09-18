@@ -4,7 +4,8 @@
 Both backends (Python+SQLite, Rust+SQLite), loopback, median of 7 (house
 method). Measures the 2026-09-18 contract end to end:
   - /sync idle / 1 op / 3 ops / 500 ops / 10k catch-up (20 x 500)
-  - 10k fresh-join pull (raw size, gzip-5 size)
+  - full-group fresh-join pull (raw size, gzip-5 size); note: after the
+    catch-up runs the group holds ~53.5k ops, so "join" means a 9.4 MB pull
   - OLD contract cost: push(1 op) + pull = 2 round trips
   - SSE wake latency: push completes -> wake frame received on the stream
   - E2E "peer up to date": wake latency + one /sync
@@ -23,9 +24,13 @@ REPS, REPS_SLOW = 7, 3
 
 
 def setup():
+    # Remove the DB and its -wal/-shm sidecars: a stale sidecar plus an
+    # orphaned server yields sqlite "disk I/O error" on the next run.
     for d in (DB_RUST, DB_PY):
-        if os.path.exists(d):
-            os.remove(d)
+        for suffix in ("", "-wal", "-shm"):
+            p = d + suffix
+            if os.path.exists(p):
+                os.remove(p)
     p_rust, p_py = free_port(), free_port()
     base_rust, base_py = f"http://127.0.0.1:{p_rust}", f"http://127.0.0.1:{p_py}"
     env_rust = dict(os.environ, DATA_FILE=DB_RUST, API_KEY=KEY, PORT=str(p_rust))
@@ -78,13 +83,18 @@ def sync(base, cursor, n_ops, i0):
     return (time.monotonic() - t0) * 1000, r["cursor"]
 
 
-def bench(base):
+def seed(base, n=N_SEED):
+    """Register the group and seed n ops in 500-op /sync batches."""
     register(base, GID)
     cursor = 0
-    # Seed 10 000 ops in 20 /sync batches (untimed, like a long offline device).
-    for k in range(20):
+    for k in range(n // 500):
         _, cursor = sync(base, cursor, 500, k * 500)
-    assert cursor == N_SEED, cursor
+    assert cursor == n, cursor
+    return cursor
+
+
+def bench(base):
+    cursor = seed(base)
 
     out = {}
     i = N_SEED

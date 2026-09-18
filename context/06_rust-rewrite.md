@@ -191,4 +191,13 @@ backend on free ports, exits 0 on full parity, ~20 s).
 
 Reproduce the network-contract bench: `cd rust && cargo build --release &&
 ../backend/.venv/bin/python -u net_bench.py` (seeds 10k ops per backend,
-median of 7, writes `/tmp/net-bench.json`, ~2 min).
+median of 7, writes `/tmp/net-bench.json`, ~2 min). Note: its
+"full-group join" row pulls the group AFTER the catch-up runs, so the
+bench group holds ~53.5 k ops (9.4 MB), not 10 k — fiche 05 labels it as
+such. A true 10 k join is 1.74 MB raw / 150 KB gzip-5 (see the degraded-
+network table there).
+
+Reproduce the degraded-network bench: `cd rust && cargo build --release &&
+rm -f /tmp/netb-* && ../backend/.venv/bin/python -u net_impact.py`
+(3 profiles behind `rust/netem.py` rootless TCP proxies: wifi, 4g, flaky;
+median of 7, writes `/tmp/net-impact.json`, ~7 min).
