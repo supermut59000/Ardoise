@@ -2,11 +2,11 @@
 """A/B bench: Ardoise Python (uvicorn+SQLite:8002) vs Rust (axum+SQLite:8001).
 Same seeded dataset, same requests, median of N. Writes /tmp/ab-results.json.
 """
-import json, random, sqlite3, statistics, subprocess, time, urllib.request, urllib.error
+import json, os, random, sqlite3, statistics, subprocess, time, urllib.request, urllib.error
 
 N = 7
 KEY = "secret42"
-REPO = os.path.dirname(os.path.abspath(__file__)) + "/../.."  # rust/ -> repo
+REPO = os.path.dirname(os.path.abspath(__file__)) + "/.."  # rust/ -> repo
 GROUP = "g1"
 
 def seed(path, n_ops):
@@ -155,7 +155,7 @@ def start_server(label):
 
 def main():
     out = {}
-    for label, port in [("python", "8002"), ("rust", "8001")]:
+    for label, port in [("python", 8002), ("rust", 8001)]:
         subprocess.run(["pkill", "-f", "uvicorn app.main"], capture_output=True)
         subprocess.run(["pkill", "-f", "target/release/ardoise"], capture_output=True)
         time.sleep(0.5)
