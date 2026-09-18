@@ -7,7 +7,8 @@ mod pushmod;
 mod wire;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, Method, StatusCode};
+use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,12 +16,46 @@ use db::Db;
 use pushmod::Config as PushConfig;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use wire::{
-    GroupOut, PullResponse, PushRequest, PushResponse, RegisterRequest,
-    SubscribeRequest, UnsubscribeRequest, VapidPublicOut,
+    GroupOut, PullResponse, PushRequest, PushResponse, RegisterRequest, SyncRequest,
+    SyncResponse, SubscribeRequest, UnsubscribeRequest, VapidPublicOut,
 };
+
+/// In-process SSE wake-up fan-out, one broadcast channel per group.
+/// Wakes carry only `seq` ("go pull") — the pull is the source of truth, so a
+/// missed/lagged wake is harmless: the client's 20 s poll still catches up.
+/// Capacity 64: at this scale a subscriber cannot lag 64 wakes behind.
+/// ponytail: in-process like the Python event_bus; a real relay network would
+/// need a broker (the boxes discussion), not more capacity.
+#[derive(Clone, Default)]
+struct EventBus {
+    channels: Arc<Mutex<HashMap<String, broadcast::Sender<u64>>>>,
+}
+
+impl EventBus {
+    /// No-op when the group has no live subscribers (the common case: push
+    /// with nobody watching).
+    fn publish(&self, group_id: &str, seq: u64) {
+        if let Some(tx) = self.channels.lock().unwrap().get(group_id) {
+            let _ = tx.send(seq); // Err only if all receivers dropped
+        }
+    }
+
+    fn subscribe(&self, group_id: &str) -> broadcast::Receiver<u64> {
+        self.channels
+            .lock()
+            .unwrap()
+            .entry(group_id.to_string())
+            .or_insert_with(|| broadcast::channel(64).0)
+            .subscribe()
+    }
+}
 
 #[derive(Clone)]
 pub struct Config {
@@ -38,6 +73,7 @@ struct AppState {
     db: Db,
     cfg: Arc<Config>,
     push_cfg: Arc<PushConfig>,
+    events: EventBus,
 }
 
 fn env(name: &str, default: &str) -> String {
@@ -185,7 +221,114 @@ async fn push_ops(
             pushmod::notify_group(db, cfg, &gid, actors, accepted).await;
         });
     }
+    // SSE wake-up: genuinely new ops only (dedup and reseed pushes create no
+    // new rows, so other devices have nothing to sync).
+    if n_accepted > 0 && !body.reseed {
+        st.events.publish(&group_id, cursor as u64);
+    }
     Ok(Json(PushResponse { accepted: n_accepted, cursor }))
+}
+
+/// Push + pull in ONE round trip: applies `ops` with the exact push semantics
+/// (idempotent dedup by opId, same 404 for an unregistered group, same
+/// notification fan-out rules), then returns everything with seq > `since` —
+/// including the ops just accepted, so the device learns the seq of its own
+/// ops without a second request.
+async fn sync_ops(
+    State(st): State<AppState>,
+    Path(group_id): Path<String>,
+    Json(body): Json<SyncRequest>,
+) -> Result<Json<SyncResponse>, Response> {
+    if body.since < 0 {
+        return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "since: >= 0"));
+    }
+    if st.db.get_group(&group_id).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.is_none() {
+        return Err(detail(StatusCode::NOT_FOUND, "Groupe non enregistre"));
+    }
+    for o in &body.ops {
+        if let Err(msg) = o.validate() {
+            return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, msg));
+        }
+    }
+    let (accepted, rows, cursor) = st
+        .db
+        .sync_ops(&group_id, &body.ops, body.since)
+        .map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let n_accepted = accepted.len() as i64;
+    if !accepted.is_empty() && accepted.len() <= pushmod::NOTIFY_MAX_BATCH && !body.reseed && pushmod::push_enabled(&st.push_cfg) {
+        let actors: std::collections::HashSet<String> = accepted.iter().map(|o| o.actor.clone()).collect();
+        let db = st.db.clone();
+        let cfg = st.push_cfg.clone();
+        let gid = group_id.clone();
+        tokio::spawn(async move {
+            pushmod::notify_group(db, cfg, &gid, actors, accepted).await;
+        });
+    }
+    if n_accepted > 0 && !body.reseed {
+        st.events.publish(&group_id, cursor as u64);
+    }
+    let gen = st.db.server_generation().map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(SyncResponse {
+        accepted: n_accepted,
+        ops: rows.into_iter().map(|o| o.to_out()).collect(),
+        cursor,
+        server_generation: gen,
+    }))
+}
+
+/// One SSE subscription: owns its broadcast receiver across `unfold`
+/// iterations (the async block's state machine keeps the pending `recv()`
+/// alive, so waker registration survives — a fresh `recv()` per poll would be
+/// unregistered by `Recv::drop` and the wake-up would be lost).
+struct Wake {
+    rx: broadcast::Receiver<u64>,
+    first: bool,
+}
+
+/// SSE wake stream for a group: `event: op` + `data: {"seq": N}` whenever new
+/// rows land — a wake-up, not data (the client pulls). 15 s keepalive comment
+/// like the Python endpoint. The stream never ends server-side; the client
+/// closing it drops the receiver.
+async fn group_events(
+    State(st): State<AppState>,
+    Path(group_id): Path<String>,
+) -> Response {
+    let known = match st.db.get_group(&group_id) {
+        Ok(g) => g.is_some(),
+        Err(e) => return detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    if !known {
+        return detail(StatusCode::NOT_FOUND, "Groupe non enregistre");
+    }
+    let rx = st.events.subscribe(&group_id);
+    let stream = futures_util::stream::unfold(Wake { rx, first: true }, |mut w| async move {
+        if w.first {
+            w.first = false;
+            return Some((Ok::<_, Infallible>(Event::default().comment("connected")), w));
+        }
+        match w.rx.recv().await {
+            Ok(seq) => Some((
+                Ok(Event::default().event("op").data(format!("{{\"seq\":{seq}}}"))),
+                w,
+            )),
+            // Lagged (subscriber fell >64 wakes behind): comment no-op for the
+            // client; its next wake or 20 s poll re-syncs. Closed is
+            // unreachable — senders live as long as the process.
+            Err(broadcast::error::RecvError::Lagged(_)) => Some((Ok(Event::default().comment("lagged")), w)),
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    });
+    let sse = Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive"));
+    // Sse::into_response sets Cache-Control: no-cache; axum 0.8 removed tuple
+    // IntoResponse, so the rest goes through the builder. Starlette emits
+    // "text/event-stream; charset=utf-8" — match it for A/B parity.
+    let mut resp = sse.into_response();
+    resp.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8"));
+    resp.headers_mut()
+        .insert(HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no"));
+    resp
 }
 
 #[derive(Deserialize)]
@@ -320,11 +463,35 @@ async fn main() {
             vapid_private_key: cfg.vapid_private_key.clone(),
             vapid_subject: cfg.vapid_subject.clone(),
         }),
+        events: EventBus::default(),
     };
 
+    let app = build_app(state);
+
+    let addr = format!("0.0.0.0:{}", cfg.port);
+    println!("ardoise listening on {addr} (db: {})", cfg.data_file);
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await.expect("failed to bind");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+            println!("shutting down");
+        })
+        .await
+        .expect("server error");
+}
+
+fn build_app(state: AppState) -> Router {
+    let cfg = state.cfg.clone();
     // Configured list = the allowed set; empty = local dev, allow anything.
     let cors = if cfg.cors_origins.is_empty() {
-        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any).allow_credentials(true)
+        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+            // No allow_credentials: tower-http 0.6 asserts it cannot combine
+            // with wildcard methods/headers (panics on poll_ready, e.g. via
+            // tower::ServiceExt::oneshot), and the client uses X-API-Key — no
+            // cookie-credentialed CORS in dev.
+            // ponytail: if cookie auth ever appears, switch dev mode to an
+            // explicit allow_headers list like the configured branch.
     } else {
         use axum::http::HeaderValue;
         let origins: Vec<HeaderValue> = cfg
@@ -352,6 +519,8 @@ async fn main() {
         .route("/groups/resolve/{share_code}", get(resolve_code))
         .route("/groups/{group_id}", get(get_group))
         .route("/groups/{group_id}/ops", post(push_ops).get(pull_ops))
+        .route("/groups/{group_id}/sync", post(sync_ops))
+        .route("/groups/{group_id}/events", get(group_events))
         .route("/push/vapid-public-key", get(vapid_public_key))
         .route("/push/subscribe", post(subscribe))
         .route("/push/unsubscribe", post(unsubscribe))
@@ -366,22 +535,124 @@ async fn main() {
 
     let api = Router::new().route("/system/ping", get(ping)).merge(authed);
 
-    let app = Router::new()
+    Router::new()
         .route("/", get(root))
         .route("/health", get(health))
         .nest("/api/v1", api)
         .layer(cors)
-        .with_state(state.clone());
+        .with_state(state)
+}
 
-    let addr = format!("0.0.0.0:{}", cfg.port);
-    println!("ardoise listening on {addr} (db: {})", cfg.data_file);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await.expect("failed to bind");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            println!("shutting down");
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt; // oneshot: consume a Router without binding a port
+
+    fn test_state(tag: &str) -> AppState {
+        let p = format!("/tmp/ardoise-maintest-{}-{}.db", std::process::id(), tag);
+        let _ = std::fs::remove_file(&p);
+        AppState {
+            db: db::open(&p).unwrap(),
+            cfg: Arc::new(Config {
+                api_key: String::new(),
+                vapid_private_key: String::new(),
+                vapid_subject: "mailto:t@example.com".into(),
+                cors_origins: vec![],
+                port: 0,
+                data_file: p,
+                version: "t".into(),
+            }),
+            push_cfg: Arc::new(PushConfig {
+                vapid_private_key: String::new(),
+                vapid_subject: "mailto:t@example.com".into(),
+            }),
+            events: EventBus::default(),
+        }
+    }
+
+    async fn register(app: &Router, gid: &str) -> StatusCode {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/groups/register")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&json!({ "groupId": gid })).unwrap()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    fn op_json(op_id: &str) -> Value {
+        json!({
+            "opId": op_id, "groupId": "g1", "entity": "expense", "entityId": "e1",
+            "action": "create", "payload": {"amountCents": 5}, "actor": "dev",
+            "lamport": 1, "createdAt": 1,
         })
-        .await
-        .expect("server error");
+    }
+
+    fn sync_req(body: Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/groups/g1/sync")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sync_endpoint_returns_own_ops_in_one_round_trip() {
+        let app = build_app(test_state("sync"));
+        assert_eq!(register(&app, "g1").await, StatusCode::OK);
+        let res = app.clone().oneshot(sync_req(json!({ "ops": [op_json("o1")], "since": 0 }))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert_eq!(v["accepted"], 1);
+        assert_eq!(v["cursor"], 1);
+        assert_eq!(v["ops"][0]["opId"], "o1");
+        assert!(v["serverGeneration"].is_string());
+        // Re-sync the same op: nothing accepted, empty window (since=1).
+        let res = app.clone().oneshot(sync_req(json!({ "ops": [op_json("o1")], "since": 1 }))).await.unwrap();
+        let v: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert_eq!(v["accepted"], 0);
+        assert_eq!(v["cursor"], 1);
+        assert_eq!(v["ops"].as_array().unwrap().len(), 0);
+        // Unregistered group: 404 like /ops.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/groups/ghost/sync")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&json!({ "ops": [], "since": 0 })).unwrap()))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+        // since < 0: clean 422, never a 500.
+        let res = app.clone().oneshot(sync_req(json!({ "ops": [], "since": -1 }))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn events_endpoint_serves_sse_for_registered_group() {
+        let app = build_app(test_state("events"));
+        assert_eq!(register(&app, "g1").await, StatusCode::OK);
+        let req = Request::builder().uri("/api/v1/groups/g1/events").body(Body::empty()).unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/event-stream"));
+        assert_eq!(res.headers().get(header::CACHE_CONTROL).unwrap(), "no-cache");
+        assert_eq!(res.headers().get(HeaderName::from_static("x-accel-buffering")).unwrap(), "no");
+        // Body is an infinite stream: header check only; dropping the
+        // response drops the receiver.
+        // Unregistered group: 404, never a stream.
+        let req = Request::builder().uri("/api/v1/groups/ghost/events").body(Body::empty()).unwrap();
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn event_bus_wakes_subscriber_and_noops_without() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe("g1");
+        bus.publish("g1", 42);
+        let v = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(v, 42);
+        bus.publish("ghost", 1); // no subscribers: no-op, no panic
+    }
 }

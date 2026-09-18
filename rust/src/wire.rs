@@ -96,6 +96,25 @@ pub struct PullResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SyncRequest {
+    pub ops: Vec<OperationWire>,
+    #[serde(default)]
+    pub since: i64,
+    #[serde(default)]
+    pub reseed: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResponse {
+    pub accepted: i64,
+    pub ops: Vec<Value>,
+    pub cursor: i64,
+    pub server_generation: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegisterRequest {
     pub group_id: String,
 }
@@ -181,5 +200,25 @@ mod tests {
         assert!(op(|o| o.created_at = (i64::MAX as u64) + 1).validate().is_err());
         assert!(validate_endpoint("https://fcm.example/x").is_ok());
         assert!(validate_endpoint("http://172.17.0.1").is_err()); // F11 SSRF
+    }
+
+    #[test]
+    fn sync_request_defaults_and_response_shape() {
+        let v: SyncRequest = serde_json::from_str(
+            r#"{"ops":[{"opId":"a","groupId":"g","entity":"expense","entityId":"e","action":"create","payload":{},"actor":"x","lamport":1,"createdAt":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!((v.since, v.reseed), (0, false));
+        let r = SyncResponse {
+            accepted: 1,
+            ops: vec![serde_json::json!({"opId": "a"})],
+            cursor: 7,
+            server_generation: "gen".into(),
+        };
+        let j = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            j,
+            serde_json::json!({"accepted": 1, "ops": [{"opId": "a"}], "cursor": 7, "serverGeneration": "gen"})
+        );
     }
 }

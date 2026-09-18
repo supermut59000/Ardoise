@@ -177,8 +177,12 @@ impl Db {
     /// Returns (accepted ops, current max cursor). Never mutates existing rows.
     pub fn push_ops(&self, group_id: &str, ops: &[OperationWire]) -> Result<(Vec<OperationWire>, i64)> {
         let conn = self.lock()?;
+        Self::push_into(&conn, group_id, ops)
+    }
+
+    fn push_into(conn: &Connection, group_id: &str, ops: &[OperationWire]) -> Result<(Vec<OperationWire>, i64)> {
         if ops.is_empty() {
-            return Ok((Vec::new(), Self::max_cursor(&conn, group_id)?));
+            return Ok((Vec::new(), Self::max_cursor(conn, group_id)?));
         }
         // Existing op_ids among the incoming batch.
         let mut existing: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -229,6 +233,10 @@ impl Db {
     /// an older backup — sees cursor < since and knows to reset and re-sync).
     pub fn pull_ops(&self, group_id: &str, since: i64) -> Result<(Vec<OperationWire>, i64)> {
         let conn = self.lock()?;
+        Self::pull_from(&conn, group_id, since)
+    }
+
+    fn pull_from(conn: &Connection, group_id: &str, since: i64) -> Result<(Vec<OperationWire>, i64)> {
         let mut stmt = conn.prepare(
             "SELECT seq, op_id, group_id, entity, entity_id, action, payload, actor, lamport, created_at
              FROM operations WHERE group_id = ?1 AND seq > ?2 ORDER BY seq ASC",
@@ -262,6 +270,19 @@ impl Db {
         Ok((it.into_iter().map(|(_, w)| w).collect(), cursor))
     }
 
+
+    /// Push + pull under ONE lock (one client round trip): applies `ops`
+    /// idempotently, then returns (accepted ops, everything with seq >
+    /// `since`, cursor) — the accepted ops come back too, so the caller can
+    /// drive the notification fan-out exactly like a plain push. Atomic: a
+    /// concurrent push cannot slip in between our insert and our read (a torn
+    /// window would hand a client a cursor that skips rows).
+    pub fn sync_ops(&self, group_id: &str, ops: &[OperationWire], since: i64) -> Result<(Vec<OperationWire>, Vec<OperationWire>, i64)> {
+        let conn = self.lock()?;
+        let (accepted, _) = Self::push_into(&conn, group_id, ops)?;
+        let (rows, cursor) = Self::pull_from(&conn, group_id, since)?;
+        Ok((accepted, rows, cursor))
+    }
 
     pub fn upsert_sub(&self, s: &Sub) -> Result<()> {
         let conn = self.lock()?;
@@ -415,6 +436,23 @@ mod tests {
         // backup): empty rows, REAL max cursor — the client resets.
         let (rows3, cursor3) = db.pull_ops("g1", 99).unwrap();
         assert_eq!((rows3.len(), cursor3), (0, 3));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn sync_ops_is_push_then_pull_in_one_call() {
+        let p = tmp_path("sync"); let _ = std::fs::remove_file(&p);
+        let db = open(&p).unwrap();
+        db.register_group("g1").unwrap();
+        // Push one op and see it back in the same call.
+        let (acc, rows, cursor) = db.sync_ops("g1", &[op("s1", 1)], 0).unwrap();
+        assert_eq!((acc.len(), rows.iter().map(|r| r.op_id.as_str()).collect::<Vec<_>>(), cursor), (1, vec!["s1"], 1));
+        // s1 duplicate + new s2: one accepted, window since=1 returns only s2.
+        let (acc2, rows2, cursor2) = db.sync_ops("g1", &[op("s1", 1), op("s2", 2)], 1).unwrap();
+        assert_eq!((acc2.iter().map(|r| r.op_id.as_str()).collect::<Vec<_>>(), rows2.iter().map(|r| r.op_id.as_str()).collect::<Vec<_>>(), cursor2), (vec!["s2"], vec!["s2"], 2));
+        // Empty ops = pure pull.
+        let (acc3, rows3, cursor3) = db.sync_ops("g1", &[], 2).unwrap();
+        assert_eq!((acc3.len(), rows3.len(), cursor3), (0, 0, 2));
         let _ = std::fs::remove_file(&p);
     }
 }
