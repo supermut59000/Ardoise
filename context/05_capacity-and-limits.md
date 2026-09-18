@@ -22,13 +22,18 @@ same log in IndexedDB at a similar size (also a non-issue against quotas).
 
 ## Sync timings (server side, loopback; add network RTT)
 
+Since 2026-09-18 the client uses ONE `POST /sync` round trip (push+pull
+combined) and an SSE wake-up stream (`/events`); the 20 s poll is now the
+fallback. `POST /sync` costs ≈ push + pull in the same request.
+
 | Scenario | Measured |
 |---|---|
-| Up-to-date pull (the every-20s poll) | 13 ms |
-| Daily push (1-3 ops, one batch) | 20-50 ms |
-| 500-op push batch | ~175 ms |
-| 10 000-op catch-up push (20 batches) | 3.5 s total |
+| Up-to-date sync (empty push + pull, the every-20s fallback poll) | 13 ms |
+| Daily change (1-3 ops: one `/sync` request instead of two) | 20-50 ms |
+| 500-op push batch (one `/sync` per 500, pull included) | ~175 ms |
+| 10 000-op catch-up (20 `/sync` requests of 500) | 3.5 s total |
 | Fresh join of a 10 000-op group | one 8.6 MB response, 1.8 s (nginx gzips JSON ~5x, so ~1.5-2 MB over the air) |
+| SSE wake-up (idle stream, one frame on new ops) | in-process fan-out, no SQL on the wake-up path |
 
 ## Client-side fold (recomputed per change while a group is open)
 

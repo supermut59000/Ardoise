@@ -39,52 +39,125 @@ benchmark (pushes append rows and would drift the pull result sets).
 
 ## Latency (median, ms, 10 000-op group)
 
-| Operation | Python | Rust | Rust faster |
-|---|---|---|---|
-| ping (server floor) | 0.96 | 0.47 | 2.0× |
-| get group | 2.22 | 0.32 | 6.9× |
-| pull, up-to-date (the every-20s poll) | 2.17 | 0.38 | 5.7× |
-| pull, 10 new ops (the common case) | 2.23 | 0.52 | 4.3× |
-| pull, full 10 000-op catch-up (3 MB JSON) | 268 | 57 | 4.7× |
-| push, 500-op batch | 33.6 | 5.7 | 5.9× |
+Current pair, measured 2026-09-18 with the binary that SHIPS (native push
+sender included — the 3.6 MB pre-push binary is gone): `rust/bench_ab.py`,
+median of 7 after warmup, loopback, both stacks on fresh identical SQLite
+seeds.
 
-Cross-check with fiche 05 (Python + MariaDB, worst-case ~920 B ops): the
-every-20s poll was 13 ms there vs 2.2 ms here — the MariaDB round-trip is a
-fixed per-request cost on top of what was benched. The Rust-vs-real-stack gap
-is therefore LARGER than the table shows, not smaller.
+| Operation | Python (uvicorn+SQLite) | Rust (axum+SQLite) | Rust faster |
+|---|---|---|---|
+| ping (server floor) | 1.93 | 0.86 | 2.2× |
+| get group | 4.25 | 0.46 | 9.2× |
+| pull, up-to-date (the every-20s poll) | 4.79 | 0.83 | 5.8× |
+| pull, 10 new ops (the common case) | 5.63 | 1.09 | 5.2× |
+| pull, full 10 000-op catch-up (4.4 MB JSON) | 565.8 | 112.0 | 5.1× |
+| push, 500-op batch | 69.41 | 10.02 | 6.9× |
+| **Process RSS** | **102.5 MB** | **24.1 MB** | **4.3× less** |
+
+Caveat: absolute values move run-to-run on the N100 (turbo state, page
+cache, load) — the RATIO is stable, the absolutes are not quotable across
+days. Python's numbers ran higher than the 2026-09-17 session (76 MB RSS,
+19 ms push); that is machine state, not a regression. Cross-check with
+fiche 05 (Python + MariaDB): the every-20s poll was 13 ms there — the MariaDB
+round-trip is a fixed per-request cost on top, so the Rust-vs-prod-stack gap
+is LARGER than this table shows, not smaller.
+
+## Fiche 05 recalc — capacity on the Rust stack
+
+Every measured figure in `context/05_capacity-and-limits.md` re-derived for
+Rust + SQLite (script: `rust/capacity_rust.py`, same median-of-7 method).
+
+| fiche 05 item (Python + MariaDB) | Rust + SQLite | ratio |
+|---|---|---|
+| Op on the wire | 729 B worst-case / 484 B realistic (contract unchanged; fiche 05's 920 B used a bigger worst case) | same |
+| Op on disk | **879 B** worst-case / 469 B realistic (WAL checkpointed) vs 1.5 KB MariaDB | **1.7× smaller**, stable 10 k→100 k (87.9 MB at 100 k) |
+| Up-to-date pull (20 s poll) | 0.83 ms vs 13 ms | 16× |
+| Daily push, 1 op / 3 ops | 0.61 / 0.59 ms vs 20–50 ms | 30–80× |
+| Push 500-op batch | 10.0 ms vs 175 ms | 17.5× |
+| 10 000-op catch-up push (20 × 500) | 373 ms vs 3.5 s | 9.4× |
+| Fresh join, 10 k-op group | 304 ms; 4.4 MB raw → **0.3 MB gzip-5** vs 1.8 s / 8.6 MB | ~6× faster on air, ~15× gzip on JSON |
+| Backend RAM | 24 MB, one binary, no daemon vs 76 + 78 MB | 6.4× less |
+
+Client-side fold timings are UNCHANGED (same frontend, same fold.ts):
+1 k/5 k/10 k/20 k ops = 1.3 / 7.4 / 13.6 / 34.8 ms on the desktop (re-measured
+this session; phone 3-5× slower).
+
+Hard limits: unchanged — they live in the client (`PUSH_BATCH = 500` in
+`sync/engine.ts`), the reverse proxy (10 MB body cap) and the client timeout
+(15 s), or they are contract-level (string bounds, `NOTIFY_MAX_BATCH`).
+Neither backend enforces a server-side per-push op cap; the real guard is
+client batch size + the 10 MB proxy cap (a 10 k-op push is ~5 MB, still
+under it). Property of the stack, documented here so it isn't rediscovered.
 
 ## Footprint
 
 | What | Python stack (prod) | Rust |
 |---|---|---|
-| Backend process RSS | 76 MB (uvicorn+SQLAlchemy, SQLite-only bench) | 23 MB |
-| Database daemon | MariaDB, 78 MB tuned (fiche 05) | none (WAL file) |
+| Backend process RSS | 76 MB (uvicorn+SQLAlchemy) + MariaDB 78 MB | 24 MB |
+| Database daemon | MariaDB | none (WAL file) |
 | Process count | MariaDB + backend + (nginx) | 1 |
-| Deploy artifact | Docker image + DB container | 3.6 MB static ELF |
+| Deploy artifact | Docker image + DB container | 6.3 MB static ELF (3.6 MB before the push sender; reqwest+rustls+p256) |
 
-The brag: **23 MB, one 3.6 MB binary, zero daemons, no Docker, no npm.**
+The brag: **24 MB, one 6.3 MB binary, zero daemons, no Docker, no npm.**
 A phone could run it.
 
 ## The honest verdict
 
-- Rust is 4-7× faster per request here. The speed is real but so is the
-  ceiling: the app was already instant (fiche 05). Nobody feels 2 ms vs
-  0.4 ms on a poll; the 10k catch-up going from 268 ms to 57 ms is nice, not
+- Rust is 2.2-9.2× faster per request here. The speed is real but so is the
+  ceiling: the app was already instant (fiche 05). Nobody feels 4.8 ms vs
+  0.8 ms on a poll; the 10k catch-up going from 566 ms to 112 ms is nice, not
   transformative.
-- The win that matters is the footprint: no DB daemon, ~3× less RAM, one
-  file to deploy, one less attack surface (SQLAlchemy/PyMySQL dependency tree
-  gone).
+- The win that matters is the footprint: no DB daemon, ~4× less RAM (24 vs
+  102 MB same-state; 24 vs 154 MB vs prod Python+MariaDB), one file to
+  deploy, one less attack surface (SQLAlchemy/PyMySQL dependency tree gone),
+  and 1.7× smaller storage per op (879 B vs 1.5 KB).
 - The cost that matters: ~1 100 lines of Rust to replace 979 of Python and a
   second codebase to audit (security-audit.md and the red-team report now
   cover only the Python one). The compiler catches type errors, not sync
-  invariants — so the Rust crate carries 9 unit tests: wire validation
-  bounds, the exact French push messages, amount formatting, the aes128gcm
-  round-trip with an independent client key, VAPID JWT ES256 verification,
-  register idempotency + case-insensitive resolve, push idempotency + cursor,
-  and pull ordering + ahead-cursor auto-heal (`cargo test --release`).
+  invariants — so the Rust crate carries 14 unit tests: wire validation
+  bounds (incl. the `/sync` wire shape), the exact French push messages, amount
+  formatting, the aes128gcm round-trip with an independent client key, VAPID
+  JWT ES256 verification, register idempotency + case-insensitive resolve, push
+  idempotency + cursor, pull ordering + ahead-cursor auto-heal, `/sync`
+  push+pull semantics against a temp DB, SSE keep-alive/wake fan-out and the
+  CORS config (`cargo test --release`).
 - Maintenance rule while both exist: the Python backend is the reference
   implementation. Any contract change lands in Python first, gets mirrored in
-  Rust, and is verified against this fiche's curl matrix.
+  Rust, and is verified with `rust/parity_check.py` (the automated A/B matrix
+  below).
+
+## Network contract, 2026-09-18: one round trip + SSE wake-up
+
+Before: every device change cost TWO requests (push, then poll). After:
+
+- `POST /groups/{id}/sync` — push `ops` (idempotent, same dedup rules, same
+  500-batch client cap) and pull everything `seq > since` in the SAME request,
+  so a device learns the seq of its own ops without a second round trip. One
+  idle sync = one request. `since < 0` → 422 on both backends (Pydantic `ge=0`
+  vs the Rust guard); unknown group → 404 before any mutation.
+- `GET /groups/{id}/events` — SSE wake-up stream. On new accepted ops (and
+  only then: dedups and reseeded pushes don't wake) the server sends one
+  minimal frame, `event: op` + `data: {"seq": N}` — a wake-up, never the data.
+  The client re-syncs to get the ops. 15 s keep-alive comment, `: connected`
+  first comment, `X-Accel-Buffering: no`, `Cache-Control: no-cache`.
+  Python: in-process `asyncio.Queue` fan-out per group (single-process deploy
+  only, like the push fan-out). Rust: `tokio::sync::broadcast` per group
+  (capacity 64; a lagged subscriber gets a `: lagged` comment and the next
+  re-sync catches up — the stream never carries truth).
+- Client (`frontend-react`): the engine does per-batch `/sync` (500 ops each,
+  mark-synced as it lands, self-heal generation/cursor logic unchanged); the
+  hook keeps one SSE stream per shared group (reconciled after each pass,
+  reconnect backoff 1 s → 30 s, `fetch` + `ReadableStream` because
+  `EventSource` cannot send `X-API-Key`) and keeps the 20 s poll as the
+  fallback for SSE-unfriendly proxies.
+
+A/B parity matrix (`rust/parity_check.py`, both backends live, 18/18 green on
+2026-09-18): register; `/sync` accepted/cursor/ops body/serverGeneration;
+dedup (`accepted=0`, cursor, ops); error paths (`/sync` 404 unknown group,
+422 `since<0`, `/events` 404); SSE headers (content-type with charset,
+cache-control, x-accel-buffering); first comment; wake frame shape + `seq`
+payload on a concurrent push. The only cosmetic diff: Python's JSON pretty-
+spaces (FastAPI) vs compact (serde) — semantically identical.
 
 ## Running it
 
@@ -105,3 +178,7 @@ Reproduce the push cross-conformance: `cd rust && cargo build --release &&
 ../backend/.venv/bin/python ece_cross_check.py`. Note: `cargo test` alone
 does NOT refresh `target/release/ardoise` — the cross-check spawns the
 release binary, so build it explicitly first.
+
+Reproduce the A/B network parity: `cd rust && cargo build --release &&
+../backend/.venv/bin/python -u parity_check.py` (starts one live server per
+backend on free ports, exits 0 on full parity, ~20 s).

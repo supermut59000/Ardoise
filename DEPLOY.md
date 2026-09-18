@@ -107,7 +107,7 @@ The QR is convenient, not one-time or bulletproof. It is a reusable bearer crede
 
 ## 6. Rust backend (optional, parallel A/B)
 
-An independent port of the same contract: axum + SQLite WAL, one 3.6 MB
+An independent port of the same contract: axum + SQLite WAL, one 6.3 MB
 static binary, ~23 MB RAM, zero daemons, same `API_KEY`, and the same VAPID
 key as section 2 for push (wire output cross-checked byte-for-byte against
 pywebpush). It keeps its OWN database file; devices never mix both backends
@@ -120,14 +120,26 @@ VAPID_SUBJECT="mailto:you@example.com" PORT=8001 \
 DATA_FILE=/var/lib/ardoise-rust.db ./target/release/ardoise
 ```
 
-Benchmarks, footprint and the push cross-conformance protocol:
-[context/06_rust-rewrite.md](context/06_rust-rewrite.md).
+The 2026-09-18 network contract — one `POST /sync` round trip (push+pull
+combined) and a live SSE wake-up stream `GET /events` (data stays in the poll)
+— is implemented and parity-tested on BOTH backends (`rust/parity_check.py`,
+18/18 green: identical bodies, headers, SSE frames and error paths).
+
+Benchmarks, footprint, the push cross-conformance protocol and the network
+contract: [context/06_rust-rewrite.md](context/06_rust-rewrite.md).
 
 ## Notes
 
-- The password gates **sync only** (`register`/`resolve`/`push`/`pull`). The static app
+- The password gates **sync only** (`register`/`resolve`/`push`/`pull`/`sync`/`events`). The static app
   still loads without it; you just cannot sync until it is entered. `/health` and
   `/system/ping` stay open for liveness checks (`/health` returns 503 when the DB is down).
+- **Live sync rides on SSE** (`GET /api/v1/groups/{id}/events`): a tiny wake-up
+  frame when new ops land, then the client does one `POST /sync`. The 20 s
+  poll stays as fallback for proxies that drop long-lived connections. Both
+  backends send `X-Accel-Buffering: no`, which nginx/Caddy honor to stream the
+  frames (no extra proxy config needed); a proxy that ignores the header and
+  buffers responses delays wakes until the poll fires — the data is still
+  consistent, only slower.
 - Changing `API_KEY` later logs everyone out of sync; they re-enter the new one once or scan a newly generated group QR code.
 - **The server is disposable.** If its database is ever wiped or restored from an old
   backup, the phones detect it and automatically re-register and re-upload the full
