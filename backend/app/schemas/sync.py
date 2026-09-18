@@ -51,6 +51,27 @@ class PullResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class SyncRequest(BaseModel):
+    """
+    Push + pull in one round trip: the server applies `ops` (idempotent, same
+    rules as POST /ops) and returns everything with seq > `since` — including
+    the ops just accepted, so a device never needs a second request to learn
+    the seq of its own ops.
+    """
+
+    ops: List[OperationWire]
+    since: int = Field(0, ge=0)
+    reseed: bool = False
+
+
+class SyncResponse(BaseModel):
+    accepted: int  # how many of the pushed ops were newly stored
+    ops: List[OperationWire]  # everything with seq > since, seq order
+    cursor: int  # pass back as `since` next time
+    server_generation: str = Field(serialization_alias="serverGeneration")
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class RegisterRequest(BaseModel):
     group_id: str = Field(alias="groupId", min_length=1, max_length=36)
     model_config = ConfigDict(populate_by_name=True)
