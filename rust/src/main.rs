@@ -114,7 +114,7 @@ async fn root(State(st): State<AppState>) -> Json<Value> {
 
 /// 503 (not a green "unhealthy" 200) so any monitor sees a DB outage as down.
 async fn health(State(st): State<AppState>) -> Response {
-    if st.db.health() {
+    if st.db.health().await {
         Json(json!({ "status": "healthy" })).into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "unhealthy", "db": "unreachable" }))).into_response()
@@ -145,8 +145,8 @@ async fn auth_check() -> Json<Value> {
 
 // --- handlers: groups ---
 
-fn group_out(st: &AppState, g: &db::Group) -> Result<Json<GroupOut>, Response> {
-    let gen = st.db.server_generation().map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+async fn group_out(st: &AppState, g: &db::Group) -> Result<Json<GroupOut>, Response> {
+    let gen = st.db.server_generation().await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(GroupOut {
         group_id: g.id.clone(),
         share_code: g.share_code.clone(),
@@ -165,8 +165,9 @@ async fn register_group(
     let g = st
         .db
         .register_group(&body.group_id)
+        .await
         .map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    group_out(&st, &g)
+    group_out(&st, &g).await
 }
 
 /// Resolve a share code (case-insensitive) so another device can join.
@@ -174,8 +175,8 @@ async fn resolve_code(
     State(st): State<AppState>,
     Path(share_code): Path<String>,
 ) -> Result<Json<GroupOut>, Response> {
-    match st.db.resolve_code(&share_code).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
-        Some(g) => group_out(&st, &g),
+    match st.db.resolve_code(&share_code).await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
+        Some(g) => group_out(&st, &g).await,
         None => Err(detail(StatusCode::NOT_FOUND, "Code de partage introuvable")),
     }
 }
@@ -184,8 +185,8 @@ async fn get_group(
     State(st): State<AppState>,
     Path(group_id): Path<String>,
 ) -> Result<Json<GroupOut>, Response> {
-    match st.db.get_group(&group_id).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
-        Some(g) => group_out(&st, &g),
+    match st.db.get_group(&group_id).await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))? {
+        Some(g) => group_out(&st, &g).await,
         None => Err(detail(StatusCode::NOT_FOUND, "Groupe non enregistre")),
     }
 }
@@ -199,7 +200,7 @@ async fn push_ops(
     Path(group_id): Path<String>,
     Json(body): Json<PushRequest>,
 ) -> Result<Json<PushResponse>, Response> {
-    if st.db.get_group(&group_id).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.is_none() {
+    if st.db.get_group(&group_id).await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.is_none() {
         return Err(detail(StatusCode::NOT_FOUND, "Groupe non enregistre"));
     }
     for o in &body.ops {
@@ -210,6 +211,7 @@ async fn push_ops(
     let (accepted, cursor) = st
         .db
         .push_ops(&group_id, &body.ops)
+        .await
         .map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let n_accepted = accepted.len() as i64;
     if !accepted.is_empty() && accepted.len() <= pushmod::NOTIFY_MAX_BATCH && !body.reseed && pushmod::push_enabled(&st.push_cfg) {
@@ -242,7 +244,7 @@ async fn sync_ops(
     if body.since < 0 {
         return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "since: >= 0"));
     }
-    if st.db.get_group(&group_id).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.is_none() {
+    if st.db.get_group(&group_id).await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.is_none() {
         return Err(detail(StatusCode::NOT_FOUND, "Groupe non enregistre"));
     }
     for o in &body.ops {
@@ -253,6 +255,7 @@ async fn sync_ops(
     let (accepted, rows, cursor) = st
         .db
         .sync_ops(&group_id, &body.ops, body.since)
+        .await
         .map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let n_accepted = accepted.len() as i64;
     if !accepted.is_empty() && accepted.len() <= pushmod::NOTIFY_MAX_BATCH && !body.reseed && pushmod::push_enabled(&st.push_cfg) {
@@ -267,7 +270,7 @@ async fn sync_ops(
     if n_accepted > 0 && !body.reseed {
         st.events.publish(&group_id, cursor as u64);
     }
-    let gen = st.db.server_generation().map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let gen = st.db.server_generation().await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(SyncResponse {
         accepted: n_accepted,
         ops: rows.into_iter().map(|o| o.to_out()).collect(),
@@ -293,7 +296,7 @@ async fn group_events(
     State(st): State<AppState>,
     Path(group_id): Path<String>,
 ) -> Response {
-    let known = match st.db.get_group(&group_id) {
+    let known = match st.db.get_group(&group_id).await {
         Ok(g) => g.is_some(),
         Err(e) => return detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
@@ -346,14 +349,15 @@ async fn pull_ops(
     if q.since < 0 {
         return Err(detail(StatusCode::UNPROCESSABLE_ENTITY, "since: >= 0"));
     }
-    if st.db.get_group(&group_id).map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.is_none() {
+    if st.db.get_group(&group_id).await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.is_none() {
         return Err(detail(StatusCode::NOT_FOUND, "Groupe non enregistre"));
     }
     let (rows, cursor) = st
         .db
         .pull_ops(&group_id, q.since)
+        .await
         .map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let gen = st.db.server_generation().map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let gen = st.db.server_generation().await.map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(PullResponse {
         ops: rows.into_iter().map(|o| o.to_out()).collect(),
         cursor,
@@ -399,6 +403,7 @@ async fn subscribe(
             device_id: body.device_id,
             group_ids: body.group_ids,
         })
+        .await
         .map_err(|e| detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -409,7 +414,7 @@ async fn unsubscribe(
     Json(body): Json<UnsubscribeRequest>,
 ) -> Result<Json<Value>, Response> {
     require_push_enabled(&st.cfg)?;
-    let _ = st.db.delete_sub(&body.endpoint); // errors are a no-op, like Python's missing-row case
+    let _ = st.db.delete_sub(&body.endpoint).await; // errors are a no-op, like Python's missing-row case
     Ok(Json(json!({ "ok": true })))
 }
 

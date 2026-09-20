@@ -320,14 +320,27 @@ pub async fn notify_group(
         }
     };
     let gid = group_id.to_string();
+    // build_body is sync: pre-fetch the latest known fields for this batch
+    // (superset: description + name per op, plus the title field); the
+    // lookup closure hits the map, not the DB.
+    let mut needed: std::collections::HashSet<(String, Option<String>, String)> = std::collections::HashSet::new();
+    for op in &ops {
+        needed.insert((op.entity.clone(), Some(op.entity_id.clone()), "description".into()));
+        needed.insert((op.entity.clone(), Some(op.entity_id.clone()), "name".into()));
+    }
+    needed.insert(("group".into(), None, "name".into()));
+    let mut latest: std::collections::HashMap<(String, Option<String>, String), Option<String>> = std::collections::HashMap::new();
+    for (e, id, f) in &needed {
+        latest.insert((e.clone(), id.clone(), f.clone()), db.latest_field(&gid, e, f, id.as_deref()).await.ok().flatten());
+    }
     let lookup = |entity: &str, entity_id: Option<&str>, field: &str| -> Option<String> {
-        db.latest_field(&gid, entity, field, entity_id).ok().flatten()
+        latest.get(&(entity.to_string(), entity_id.map(String::from), field.to_string())).cloned().flatten()
     };
     let title = lookup("group", None, "name").unwrap_or_else(|| "Ardoise".into());
     let body = build_body(&ops, &lookup);
     let payload = serde_json::json!({"title": title, "body": body, "groupId": gid}).to_string();
 
-    let subs = match db.list_subs() {
+    let subs = match db.list_subs().await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("push: lecture des abonnements impossible: {e}");
@@ -350,7 +363,7 @@ pub async fn notify_group(
             Ok(None) => {}
             Ok(Some(status)) => {
                 if status == 404 || status == 410 {
-                    if let Err(e) = db.delete_sub(&sub.endpoint) {
+                    if let Err(e) = db.delete_sub(&sub.endpoint).await {
                         let ep = &sub.endpoint[..sub.endpoint.len().min(60)];
                         eprintln!("push: suppression de {ep} impossible: {e}");
                     }

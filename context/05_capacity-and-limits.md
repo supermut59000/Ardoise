@@ -69,6 +69,85 @@ Desktop Node; multiply by ~3-5 for a mid-range phone.
 Instant for decades of normal use; revisit D14 (cache folded state) only if a
 group crosses ~20-30 000 ops.
 
+## Concurrent users (2026-09-19, `rust/loadtest.py`, 12-core / 30 GB box, loopback)
+
+Method: one generator process; U users, each = HTTP keep-alive + SSE
+stream; ramp (full blast or rate-limited `RAMP_RATE` users/s), then a
+steady window where every user syncs every 18–22 s and a probe group
+measures SSE wake (push → frame). SQLite, fresh DB.
+
+**Python (uvicorn): wall at ~15 SSE streams, no scaling curve.**
+`group_events` is `async def` but runs synchronous SQLAlchemy on the event
+loop; the first 15 SSE connections pin the pool (5 + 10) and the 16th
+checkout blocks the loop up to 30 s — the whole server stops answering.
+0–5 of U joined at every level, 100 → 1 000 000, burst or gentle.
+
+**Rust (axum): clean to 10k, caps at ~14k concurrent users.**
+
+| Level (ramp) | joined | sync p50 / p99 | RSS | CPU | wake p50 |
+|---|---|---|---|---|---|
+| 10k (2 500 u/s) | 10 000 / 10k | 0.87 ms / 153 ms | 882 MB | 36 % | 0.4 ms |
+| 100k (500 u/s) | 14 114 / 100k | 0.84 ms / 81 ms | 1 441 MB | 50 % | — ¹ |
+| 1 000 000 (2 500 u/s) | 14 114 / 1M | 17.6 ms / 116 ms ² | 1 687 MB | 55 % | — ¹ |
+| 200k (500 u/s) | 14 114 / 200k | unresponsive mid-level ³ | — | — | — ¹ |
+
+¹ probe SSE stopped delivering at 100k+ (likely collateral of the same
+   stall; not independently verified — follow up before quoting wake at
+   scale)
+² steady-window metrics predate the steady-only counter fix; include ramp
+   ticks of long-lived users
+³ server stopped answering at ~150k users (liveness break); process gone
+   by steady sampling; no panic logged, no OOM
+
+- **Burst mode is a TCP artifact, not an app limit.** 10k simultaneous SYNs
+  get only ~4.4k through (accept backlog 1024; the kernel drops the rest
+  and retransmissions outlive the 10 s connect timeout); 100k SYNs → 0%.
+  Same 10k with a governed 2 500 u/s ramp: 10 000 / 10 000, zero errors.
+- **The ~14k cap is the SQLite single-writer path, not the machine.** One
+  connection behind a `std::sync::Mutex` (WAL, `synchronous=NORMAL`),
+  locked inside async handlers: around 14k concurrent users the
+  join/sync/keepalive demand saturates the writer, tokio worker threads
+  block on the mutex, new joins exceed the 15 s client timeout, and at
+  200k the server stops answering. Nothing else is close at the cap: RSS
+  1.4–1.7 GB of 30 GB (~88–100 KB/user), 28k of 524k FDs, ~50 % of one
+  core.
+- Steady-state cost per user: ~88–100 KB RSS; ~700 syncs/s aggregate for
+  14k users at sub-millisecond p50 while the join queue is empty.
+
+**After the storage-layer fix (2026-09-19): cap moves 14.1k → 56.3k, then
+the single writer saturates under the synthetic write storm.**
+
+Fix: `std::sync::Mutex` → `tokio::sync::Mutex` on the writer connection;
+WAL read pool of 8 read-only connections (`with_reader`, slots run in
+parallel); empty-ops `/sync` (69% of steady traffic) routed to the read
+pool as a pure pull; `get_group`/`resolve_code`/`health`/`list_subs`/
+`latest_field` on the read pool; `busy_timeout(5 s)` on every connection.
+Writer still owns register/push/sync-with-ops/subscriptions. 14/14 unit
+tests, full Python↔Rust parity (`rust/parity_check.py`).
+
+| Level (ramp) | joined | sync p50 / p99 | RSS | CPU |
+|---|---|---|---|---|
+| 100k (500 u/s) | **56 263 / 100k** | 2.58 ms / 1 380 ms | 1 630 MB | 76 % of 1 core |
+
+- At the cap, the writer — not the lock, not RAM, not CPU — is the wall
+  under the **synthetic** storm (31% of users push 1–3 ops every 20 s):
+  ~870 push tx/s at 56k, just past the single-writer capacity. Push syncs
+  queue past the 15 s timeout (err ≈ every push sync in steady), pulls
+  stay fine (p50 2.58 ms). Real-world write rate is ~1 000× lower
+  (~1 000 ops/year/group), so at real load the writer is not the limit.
+- Measured per-user RSS at 56k: ~29 KB (1.63 GB) — the earlier 88–100 KB
+  estimate included the groups page cache; 200k users ≈ 6 GB, well under
+  the 30 GB box.
+- **Harness/machine wall found at 200k: client ephemeral port space.**
+  `net.ipv4.ip_local_port_range = 32768–60999` = 28 232 ports; the 200k
+  run held 28 197 ESTAB, then the generator got `EADDRNOTAVAIL` (errno 99)
+  on new connects. One loopback generator on this host tops out at ~28k
+  concurrent held connections (~64k with a widened port range). Multi-
+  process generation on the same host does **not** help: FDs are
+  per-process, ephemeral ports are per-host. A 200k+ user test needs a
+  second generator machine (or a no-keep-alive generator churning ports
+  with `tcp_tw_reuse`).
+
 ## Hard limits baked into the code
 
 | Limit | Value | Where |

@@ -1,14 +1,19 @@
-//! SQLite storage layer. One connection behind a Mutex (WAL mode): at this
-//! scale every query is <1 ms, a pool is overkill.
-//! ponytail: single writer connection; if writes ever contend (they won't at
-//! friends scale), swap for sqlx with a pool.
+//! SQLite storage layer. One writer + a small read-only pool behind
+//! tokio::sync::Mutex (WAL mode: N readers + 1 writer, readers never block
+//! the writer).
+//! The locks are async so a contended wait queues the task instead of
+//! parking a worker thread in a blocking std lock — that stall starved the
+//! event loop at ~14k concurrent users (loadtest 2026-09-19).
+//! ponytail: 8 fixed reader slots; bump READERS if reads ever contend.
 
 use anyhow::Result;
 use rand::rngs::OsRng;
 use rand::Rng;
-use rusqlite::{params, Connection};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use rusqlite::{params, Connection, OpenFlags};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
 use crate::wire::OperationWire;
 
@@ -39,13 +44,17 @@ pub fn generate_code() -> String {
         .collect()
 }
 
+const READERS: usize = 8;
+
 #[derive(Clone)]
 pub struct Db {
-    conn: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<Connection>>,
+    readers: Arc<Mutex<VecDeque<Connection>>>,
 }
 
 pub fn open(path: &str) -> Result<Db> {
     let conn = Connection::open(path)?;
+    conn.busy_timeout(Duration::from_millis(5_000))?;
     // WAL: readers never block the writer (polls every 20 s vs pushes).
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -87,17 +96,33 @@ pub fn open(path: &str) -> Result<Db> {
             generation TEXT NOT NULL
         );",
     )?;
-    Ok(Db { conn: Arc::new(Mutex::new(conn)) })
+    // Read-only pool: WAL serves these alongside the single writer.
+    let mut readers = VecDeque::new();
+    for _ in 0..READERS {
+        let r = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        r.busy_timeout(Duration::from_millis(5_000))?;
+        readers.push_back(r);
+    }
+    Ok(Db { writer: Arc::new(Mutex::new(conn)), readers: Arc::new(Mutex::new(readers)) })
 }
 
 impl Db {
-    pub fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(|e| anyhow::anyhow!("db poisoned: {e}"))
+    /// Run `f` on a pooled read-only connection. Slots run in parallel: the
+    /// pool lock is held only while a slot is popped/pushed, never during the
+    /// query. `f` is sync (no cancellation point between pop and push-back).
+    async fn with_reader<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let conn = self.readers.lock().await.pop_back().expect("db reader pool drained");
+        let out = f(&conn);
+        self.readers.lock().await.push_back(conn);
+        out
     }
 
     /// Stable for one DB lifetime; a wiped DB gets a fresh generation.
-    pub fn server_generation(&self) -> Result<String> {
-        let conn = self.lock()?;
+    pub async fn server_generation(&self) -> Result<String> {
+        let conn = self.writer.lock().await;
         let row: Option<String> = conn
             .query_row("SELECT generation FROM server_meta WHERE id = 1", [], |r| r.get(0))
             .ok();
@@ -111,28 +136,28 @@ impl Db {
         }
     }
 
-    pub fn health(&self) -> bool {
-        self.lock().map(|c| c.execute_batch("SELECT 1")).is_ok()
+    pub async fn health(&self) -> bool {
+        self.with_reader(|c| { c.execute_batch("SELECT 1")?; Ok(()) }).await.is_ok()
     }
 
-
-    pub fn get_group(&self, id: &str) -> Result<Option<Group>> {
-        let conn = self.lock()?;
-        Ok(conn
-            .query_row(
-                "SELECT id, share_code FROM groups WHERE id = ?1",
-                params![id],
-                |r| Ok(Group { id: r.get(0)?, share_code: r.get(1)? }),
-            )
-            .ok())
+    pub async fn get_group(&self, id: &str) -> Result<Option<Group>> {
+        self.with_reader(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT id, share_code FROM groups WHERE id = ?1",
+                    params![id],
+                    |r| Ok(Group { id: r.get(0)?, share_code: r.get(1)? }),
+                )
+                .ok())
+        }).await
     }
 
     /// Idempotent register; retry on the astronomically unlikely code collision.
-    pub fn register_group(&self, id: &str) -> Result<Group> {
-        if let Some(g) = self.get_group(id)? {
+    pub async fn register_group(&self, id: &str) -> Result<Group> {
+        if let Some(g) = self.get_group(id).await? {
             return Ok(g);
         }
-        let conn = self.lock()?;
+        let conn = self.writer.lock().await;
         for _ in 0..10 {
             let code = generate_code();
             let taken: i64 = conn.query_row(
@@ -152,17 +177,17 @@ impl Db {
     }
 
     /// Share codes are case-insensitive on resolve (Python does .upper()).
-    pub fn resolve_code(&self, code: &str) -> Result<Option<Group>> {
-        let conn = self.lock()?;
-        Ok(conn
-            .query_row(
-                "SELECT id, share_code FROM groups WHERE share_code = ?1",
-                params![code.to_uppercase()],
-                |r| Ok(Group { id: r.get(0)?, share_code: r.get(1)? }),
-            )
-            .ok())
+    pub async fn resolve_code(&self, code: &str) -> Result<Option<Group>> {
+        self.with_reader(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT id, share_code FROM groups WHERE share_code = ?1",
+                    params![code.to_uppercase()],
+                    |r| Ok(Group { id: r.get(0)?, share_code: r.get(1)? }),
+                )
+                .ok())
+        }).await
     }
-
 
     fn max_cursor(conn: &Connection, group_id: &str) -> Result<i64> {
         let v: Option<i64> = conn.query_row(
@@ -175,8 +200,8 @@ impl Db {
 
     /// Store incoming ops idempotently (dedup by op_id, incl. within-batch).
     /// Returns (accepted ops, current max cursor). Never mutates existing rows.
-    pub fn push_ops(&self, group_id: &str, ops: &[OperationWire]) -> Result<(Vec<OperationWire>, i64)> {
-        let conn = self.lock()?;
+    pub async fn push_ops(&self, group_id: &str, ops: &[OperationWire]) -> Result<(Vec<OperationWire>, i64)> {
+        let conn = self.writer.lock().await;
         Self::push_into(&conn, group_id, ops)
     }
 
@@ -231,9 +256,8 @@ impl Db {
     /// Ops with seq > since in seq order. Empty result returns the REAL max
     /// cursor (a client whose cursor is ahead of the server — DB restored from
     /// an older backup — sees cursor < since and knows to reset and re-sync).
-    pub fn pull_ops(&self, group_id: &str, since: i64) -> Result<(Vec<OperationWire>, i64)> {
-        let conn = self.lock()?;
-        Self::pull_from(&conn, group_id, since)
+    pub async fn pull_ops(&self, group_id: &str, since: i64) -> Result<(Vec<OperationWire>, i64)> {
+        self.with_reader(|conn| Self::pull_from(conn, group_id, since)).await
     }
 
     fn pull_from(conn: &Connection, group_id: &str, since: i64) -> Result<(Vec<OperationWire>, i64)> {
@@ -270,22 +294,32 @@ impl Db {
         Ok((it.into_iter().map(|(_, w)| w).collect(), cursor))
     }
 
-
-    /// Push + pull under ONE lock (one client round trip): applies `ops`
+    /// Push + pull in ONE round trip (one client round trip): applies `ops`
     /// idempotently, then returns (accepted ops, everything with seq >
     /// `since`, cursor) — the accepted ops come back too, so the caller can
     /// drive the notification fan-out exactly like a plain push. Atomic: a
     /// concurrent push cannot slip in between our insert and our read (a torn
     /// window would hand a client a cursor that skips rows).
-    pub fn sync_ops(&self, group_id: &str, ops: &[OperationWire], since: i64) -> Result<(Vec<OperationWire>, Vec<OperationWire>, i64)> {
-        let conn = self.lock()?;
+    /// Steady-state syncs mostly carry no ops — that path is a pure pull and
+    /// runs on a read-pool slot instead of the writer.
+    pub async fn sync_ops(
+        &self,
+        group_id: &str,
+        ops: &[OperationWire],
+        since: i64,
+    ) -> Result<(Vec<OperationWire>, Vec<OperationWire>, i64)> {
+        if ops.is_empty() {
+            let (rows, cursor) = self.with_reader(|conn| Self::pull_from(conn, group_id, since)).await?;
+            return Ok((Vec::new(), rows, cursor));
+        }
+        let conn = self.writer.lock().await;
         let (accepted, _) = Self::push_into(&conn, group_id, ops)?;
         let (rows, cursor) = Self::pull_from(&conn, group_id, since)?;
         Ok((accepted, rows, cursor))
     }
 
-    pub fn upsert_sub(&self, s: &Sub) -> Result<()> {
-        let conn = self.lock()?;
+    pub async fn upsert_sub(&self, s: &Sub) -> Result<()> {
+        let conn = self.writer.lock().await;
         conn.execute(
             "INSERT INTO push_subscriptions (endpoint, p256dh, auth, device_id, group_ids, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -302,71 +336,73 @@ impl Db {
         Ok(())
     }
 
-    pub fn delete_sub(&self, endpoint: &str) -> Result<()> {
-        let conn = self.lock()?;
+    pub async fn delete_sub(&self, endpoint: &str) -> Result<()> {
+        let conn = self.writer.lock().await;
         conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?1", params![endpoint])?;
         Ok(())
     }
 
-    pub fn list_subs(&self) -> Result<Vec<Sub>> {
-        let conn = self.lock()?;
-        let mut stmt = conn.prepare(
-            "SELECT endpoint, p256dh, auth, device_id, group_ids FROM push_subscriptions",
-        )?;
-        let rows = stmt
-            .query_map([], |r| {
-                let g: String = r.get(4)?;
-                Ok(Sub {
-                    endpoint: r.get(0)?,
-                    p256dh: r.get(1)?,
-                    auth: r.get(2)?,
-                    device_id: r.get(3)?,
-                    group_ids: serde_json::from_str(&g).unwrap_or_default(),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+    pub async fn list_subs(&self) -> Result<Vec<Sub>> {
+        self.with_reader(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT endpoint, p256dh, auth, device_id, group_ids FROM push_subscriptions",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    let g: String = r.get(4)?;
+                    Ok(Sub {
+                        endpoint: r.get(0)?,
+                        p256dh: r.get(1)?,
+                        auth: r.get(2)?,
+                        device_id: r.get(3)?,
+                        group_ids: serde_json::from_str(&g).unwrap_or_default(),
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        }).await
     }
 
     /// Latest known payload field in fold order (lamport desc, op_id desc) —
     /// matches the client fold exactly, never server arrival order.
-    pub fn latest_field(
+    pub async fn latest_field(
         &self,
         group_id: &str,
         entity: &str,
         field: &str,
         entity_id: Option<&str>,
     ) -> Result<Option<String>> {
-        let conn = self.lock()?;
-        let sql = match entity_id {
-            Some(_) => "SELECT payload FROM operations WHERE group_id=?1 AND entity=?2 AND entity_id=?3 ORDER BY lamport DESC, op_id DESC",
-            None => "SELECT payload FROM operations WHERE group_id=?1 AND entity=?2 ORDER BY lamport DESC, op_id DESC",
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows: Vec<String> = if let Some(eid) = entity_id {
-            stmt.query_map(params![group_id, entity, eid], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<_>>()?
-        } else {
-            stmt.query_map(params![group_id, entity], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<_>>()?
-        };
-        for payload in rows {
-            if let Some(v) = serde_json::from_str::<serde_json::Value>(&payload)
-                .ok()
-                .and_then(|p| p.get(field).cloned())
-            {
-                if v != serde_json::Value::Null {
-                    let s = match &v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    };
-                    if !s.is_empty() {
-                        return Ok(Some(s));
+        self.with_reader(|conn| {
+            let sql = match entity_id {
+                Some(_) => "SELECT payload FROM operations WHERE group_id=?1 AND entity=?2 AND entity_id=?3 ORDER BY lamport DESC, op_id DESC",
+                None => "SELECT payload FROM operations WHERE group_id=?1 AND entity=?2 ORDER BY lamport DESC, op_id DESC",
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let rows: Vec<String> = if let Some(eid) = entity_id {
+                stmt.query_map(params![group_id, entity, eid], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            } else {
+                stmt.query_map(params![group_id, entity], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for payload in rows {
+                if let Some(v) = serde_json::from_str::<serde_json::Value>(&payload)
+                    .ok()
+                    .and_then(|p| p.get(field).cloned())
+                {
+                    if v != serde_json::Value::Null {
+                        let s = match &v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        if !s.is_empty() {
+                            return Ok(Some(s));
+                        }
                     }
                 }
             }
-        }
-        return Ok(None);
+            Ok(None)
+        }).await
     }
 }
 
@@ -392,66 +428,66 @@ mod tests {
         format!("/tmp/ardoise-dbtest-{}-{}.db", std::process::id(), tag)
     }
 
-    #[test]
-    fn register_is_idempotent_and_resolve_case_insensitive() {
+    #[tokio::test]
+    async fn register_is_idempotent_and_resolve_case_insensitive() {
         let p = tmp_path("reg"); let _ = std::fs::remove_file(&p);
         let db = open(&p).unwrap();
-        let g1 = db.register_group("g1").unwrap();
-        let g2 = db.register_group("g1").unwrap();
+        let g1 = db.register_group("g1").await.unwrap();
+        let g2 = db.register_group("g1").await.unwrap();
         assert_eq!(g1.share_code, g2.share_code);
-        assert!(db.resolve_code(&g1.share_code).unwrap().is_some());
-        assert!(db.resolve_code(&g1.share_code.to_lowercase()).unwrap().is_some());
-        assert!(db.resolve_code("ZZZZZZZZ").unwrap().is_none());
+        assert!(db.resolve_code(&g1.share_code).await.unwrap().is_some());
+        assert!(db.resolve_code(&g1.share_code.to_lowercase()).await.unwrap().is_some());
+        assert!(db.resolve_code("ZZZZZZZZ").await.unwrap().is_none());
         let _ = std::fs::remove_file(&p);
     }
 
-    #[test]
-    fn push_is_idempotent_and_cursor_advances() {
+    #[tokio::test]
+    async fn push_is_idempotent_and_cursor_advances() {
         let p = tmp_path("push"); let _ = std::fs::remove_file(&p);
         let db = open(&p).unwrap();
-        db.register_group("g1").unwrap();
-        let (a1, c1) = db.push_ops("g1", &[op("o1", 1), op("o2", 2)]).unwrap();
+        db.register_group("g1").await.unwrap();
+        let (a1, c1) = db.push_ops("g1", &[op("o1", 1), op("o2", 2)]).await.unwrap();
         assert_eq!((a1.len(), c1), (2, 2));
         // duplicates: same call again + duplicate inside one batch
-        let (a2, c2) = db.push_ops("g1", &[op("o1", 1), op("o2", 2)]).unwrap();
+        let (a2, c2) = db.push_ops("g1", &[op("o1", 1), op("o2", 2)]).await.unwrap();
         assert_eq!((a2.len(), c2), (0, 2));
-        let (a3, c3) = db.push_ops("g1", &[op("o2", 2), op("o3", 3), op("o3", 3)]).unwrap();
+        let (a3, c3) = db.push_ops("g1", &[op("o2", 2), op("o3", 3), op("o3", 3)]).await.unwrap();
         assert_eq!(a3.len(), 1);
         assert_eq!(c3, 3);
         let _ = std::fs::remove_file(&p);
     }
 
-    #[test]
-    fn pull_orders_by_seq_and_auto_heals_ahead_cursor() {
+    #[tokio::test]
+    async fn pull_orders_by_seq_and_auto_heals_ahead_cursor() {
         let p = tmp_path("pull"); let _ = std::fs::remove_file(&p);
         let db = open(&p).unwrap();
-        db.register_group("g1").unwrap();
-        db.push_ops("g1", &[op("o1", 1), op("o2", 2), op("o3", 3)]).unwrap();
-        let (rows, cursor) = db.pull_ops("g1", 0).unwrap();
+        db.register_group("g1").await.unwrap();
+        db.push_ops("g1", &[op("o1", 1), op("o2", 2), op("o3", 3)]).await.unwrap();
+        let (rows, cursor) = db.pull_ops("g1", 0).await.unwrap();
         assert_eq!(cursor, 3);
         assert_eq!(rows.iter().map(|r| r.op_id.clone()).collect::<Vec<_>>(), vec!["o1", "o2", "o3"]);
-        let (rows2, cursor2) = db.pull_ops("g1", 2).unwrap();
+        let (rows2, cursor2) = db.pull_ops("g1", 2).await.unwrap();
         assert_eq!((rows2.len(), cursor2), (1, 3));
         // Client cursor ahead of the server (DB restored from an older
         // backup): empty rows, REAL max cursor — the client resets.
-        let (rows3, cursor3) = db.pull_ops("g1", 99).unwrap();
+        let (rows3, cursor3) = db.pull_ops("g1", 99).await.unwrap();
         assert_eq!((rows3.len(), cursor3), (0, 3));
         let _ = std::fs::remove_file(&p);
     }
 
-    #[test]
-    fn sync_ops_is_push_then_pull_in_one_call() {
+    #[tokio::test]
+    async fn sync_ops_is_push_then_pull_in_one_call() {
         let p = tmp_path("sync"); let _ = std::fs::remove_file(&p);
         let db = open(&p).unwrap();
-        db.register_group("g1").unwrap();
+        db.register_group("g1").await.unwrap();
         // Push one op and see it back in the same call.
-        let (acc, rows, cursor) = db.sync_ops("g1", &[op("s1", 1)], 0).unwrap();
+        let (acc, rows, cursor) = db.sync_ops("g1", &[op("s1", 1)], 0).await.unwrap();
         assert_eq!((acc.len(), rows.iter().map(|r| r.op_id.as_str()).collect::<Vec<_>>(), cursor), (1, vec!["s1"], 1));
         // s1 duplicate + new s2: one accepted, window since=1 returns only s2.
-        let (acc2, rows2, cursor2) = db.sync_ops("g1", &[op("s1", 1), op("s2", 2)], 1).unwrap();
+        let (acc2, rows2, cursor2) = db.sync_ops("g1", &[op("s1", 1), op("s2", 2)], 1).await.unwrap();
         assert_eq!((acc2.iter().map(|r| r.op_id.as_str()).collect::<Vec<_>>(), rows2.iter().map(|r| r.op_id.as_str()).collect::<Vec<_>>(), cursor2), (vec!["s2"], vec!["s2"], 2));
         // Empty ops = pure pull.
-        let (acc3, rows3, cursor3) = db.sync_ops("g1", &[], 2).unwrap();
+        let (acc3, rows3, cursor3) = db.sync_ops("g1", &[], 2).await.unwrap();
         assert_eq!((acc3.len(), rows3.len(), cursor3), (0, 0, 2));
         let _ = std::fs::remove_file(&p);
     }
