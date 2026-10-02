@@ -9,15 +9,24 @@
 //! pop/push design leaked a connection on cancellation and drained the
 //! pool when a mass of clients disconnected at once (loadtest 2026-09-26).
 //! ponytail: 8 fixed slots; bump READERS if reads ever contend.
+//! Writes go through a group-commit batcher: a dedicated task owns the
+//! writer connection, applies queued writes inside one transaction and
+//! COMMITs every 100 ms (or 100 writes) — fewer commits, fewer fsyncs,
+//! less disk wear. A caller is answered only AFTER the commit, so a crash
+//! inside the window never ACKs a lost write (clients re-push, op_id dedup
+//! absorbs it). Cost: a solo write waits the 50 ms grace; a burst up to
+//! grace + window (150 ms) of write→ACK latency, invisible against
+//! the clients' 20 s sync cadence.
 
 use anyhow::Result;
 use rand::rngs::OsRng;
 use rand::Rng;
 use rusqlite::{params, Connection, OpenFlags};
+use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::wire::OperationWire;
 
@@ -26,6 +35,7 @@ pub struct Group {
     pub share_code: String,
 }
 
+#[derive(Clone)]
 pub struct Sub {
     pub endpoint: String,
     pub p256dh: String,
@@ -50,9 +60,120 @@ pub fn generate_code() -> String {
 
 const READERS: usize = 8;
 
+/// Commit window: a CONCURRENT burst of writes commits after 100 ms (or
+/// 100 writes) — bursts are exactly where commit/fync volume (and disk
+/// wear) comes from. A write that arrives to an empty queue waits
+/// `GRACE_MS` for a following write before committing alone: steady rates
+/// (20–900 writes/s) form bursts and batch, a truly idle write pays
+/// `GRACE_MS` of latency, invisible against the clients' 20 s cadence.
+const FLUSH_MS: u64 = 100;
+const GRACE_MS: u64 = 50;
+const FLUSH_N: usize = 100;
+
+/// Batch commits completed since process start (exposed in /health).
+static COMMITS: AtomicU64 = AtomicU64::new(0);
+
+struct WriteJob {
+    f: Box<dyn FnOnce(&Connection) -> Result<Box<dyn Any + Send>> + Send>,
+    reply: oneshot::Sender<Result<Box<dyn Any + Send>>>,
+}
+
+async fn writer_loop(conn: Connection, mut rx: mpsc::UnboundedReceiver<WriteJob>) {
+    while let Some(first) = rx.recv().await {
+        let mut batch = vec![first];
+        let started = Instant::now();
+        // Drain what is already queued.
+        while batch.len() < FLUSH_N {
+            match rx.try_recv() {
+                Ok(j) => batch.push(j),
+                Err(_) => break,
+            }
+        }
+        if batch.len() == 1 {
+            // Possibly solo: wait GRACE_MS for the next write to arrive.
+            // Without this, a steady 93 writes/s streams through as one
+            // commit per write (each arrival finds an empty queue).
+            tokio::time::sleep(Duration::from_millis(GRACE_MS)).await;
+            while batch.len() < FLUSH_N {
+                match rx.try_recv() {
+                    Ok(j) => batch.push(j),
+                    Err(_) => break,
+                }
+            }
+        }
+        if batch.len() > 1 {
+            // Concurrent writes: wait out the 100 ms window so the burst
+            // lands in one commit. A solo write skips this and commits now.
+            while batch.len() < FLUSH_N {
+                let remaining = Duration::from_millis(FLUSH_MS).saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                tokio::select! {
+                    job = rx.recv() => match job {
+                        Some(j) => batch.push(j),
+                        None => break,
+                    },
+                    _ = tokio::time::sleep(remaining) => break,
+                }
+            }
+        }
+        for (reply, res) in apply_batch(&conn, batch) {
+            let _ = reply.send(res);
+        }
+    }
+}
+
+/// One transaction for the whole batch, one commit. A failed statement
+/// aborts the batch: ROLLBACK, every job in it gets an error (clients retry;
+/// every write here is idempotent).
+type Reply = oneshot::Sender<Result<Box<dyn Any + Send>>>;
+
+fn apply_batch(conn: &Connection, batch: Vec<WriteJob>) -> Vec<(Reply, Result<Box<dyn Any + Send>>)> {
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            return batch
+                .into_iter()
+                .map(|j| (j.reply, Err(anyhow::anyhow!("batch begin: {e}"))))
+                .collect()
+        }
+    };
+    let mut out: Vec<_> = Vec::with_capacity(batch.len());
+    let mut alive = true;
+    for job in batch {
+        if !alive {
+            out.push((job.reply, Err(anyhow::anyhow!("batch aborted by an earlier write"))));
+            continue;
+        }
+        match (job.f)(&tx) {
+            Ok(v) => out.push((job.reply, Ok(v))),
+            Err(e) => {
+                alive = false;
+                out.push((job.reply, Err(e)));
+            }
+        }
+    }
+    if alive {
+        match tx.commit() {
+            Ok(()) => {
+                COMMITS.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                for (_, r) in out.iter_mut() {
+                    *r = Err(anyhow::anyhow!("commit: {e}"));
+                }
+            }
+        }
+    } else {
+        let _ = tx.rollback();
+    }
+    out
+}
+
 #[derive(Clone)]
 pub struct Db {
-    writer: Arc<Mutex<Connection>>,
+    writer_tx: mpsc::UnboundedSender<WriteJob>,
     readers: Vec<Arc<Mutex<Connection>>>,
     next: Arc<AtomicU64>,
 }
@@ -101,6 +222,12 @@ pub fn open(path: &str) -> Result<Db> {
             generation TEXT NOT NULL
         );",
     )?;
+    // Seed the server generation once at startup so /sync reads it on the
+    // read-only pool instead of queueing a no-op write per request.
+    conn.execute(
+        "INSERT OR IGNORE INTO server_meta (id, generation) VALUES (1, ?1)",
+        params![uuid::Uuid::new_v4().to_string()],
+    )?;
     // Read-only pool: WAL serves these alongside the single writer.
     let readers: Vec<Arc<Mutex<Connection>>> = (0..READERS)
         .map(|_| {
@@ -109,8 +236,11 @@ pub fn open(path: &str) -> Result<Db> {
             Ok(Arc::new(Mutex::new(r)))
         })
         .collect::<Result<_>>()?;
+    // The batcher task owns the writer connection for the process lifetime.
+    let (writer_tx, writer_rx) = mpsc::unbounded_channel::<WriteJob>();
+    tokio::runtime::Handle::current().spawn(writer_loop(conn, writer_rx));
     Ok(Db {
-        writer: Arc::new(Mutex::new(conn)),
+        writer_tx,
         readers,
         next: Arc::new(AtomicU64::new(0)),
     })
@@ -119,6 +249,11 @@ pub fn open(path: &str) -> Result<Db> {
 impl Db {
     /// Run `f` on a round-robin read-only slot. The slot's mutex guard is
     /// released on drop — a cancelled task never loses the connection.
+    /// Batch commits completed since process start (/health).
+    pub fn commit_count() -> u64 {
+        COMMITS.load(Ordering::Relaxed)
+    }
+
     async fn with_reader<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&Connection) -> Result<T>,
@@ -128,19 +263,49 @@ impl Db {
         f(&guard)
     }
 
+    /// Queue `f` for the writer batcher (see module docs). The reply lands
+    /// AFTER the batch's commit — never ACK a write before it is durable.
+    async fn with_writer<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let job = WriteJob {
+            f: Box::new(move |c| f(c).map(|v| Box::new(v) as Box<dyn Any + Send>)),
+            reply: reply_tx,
+        };
+        self.writer_tx.send(job).map_err(|_| anyhow::anyhow!("writer queue closed"))?;
+        let boxed = reply_rx.await.map_err(|_| anyhow::anyhow!("writer task gone"))??;
+        boxed
+            .downcast::<T>()
+            .map_err(|_| anyhow::anyhow!("writer type mismatch"))
+            .map(|b| *b)
+    }
+
     /// Stable for one DB lifetime; a wiped DB gets a fresh generation.
+    /// Seeded at open(), so the hot path is a read; the writer fallback
+    /// covers databases created before the seed existed.
     pub async fn server_generation(&self) -> Result<String> {
-        let conn = self.writer.lock().await;
-        let row: Option<String> = conn
-            .query_row("SELECT generation FROM server_meta WHERE id = 1", [], |r| r.get(0))
-            .ok();
+        let row: Option<String> = self
+            .with_reader(|conn| {
+                Ok(conn
+                    .query_row("SELECT generation FROM server_meta WHERE id = 1", [], |r| r.get(0))
+                    .ok())
+            })
+            .await?;
         match row {
             Some(g) => Ok(g),
-            None => {
-                let g = uuid::Uuid::new_v4().to_string();
-                conn.execute("INSERT INTO server_meta (id, generation) VALUES (1, ?1)", params![g])?;
-                Ok(g)
-            }
+            None => self
+                .with_writer(|conn| {
+                    let g = uuid::Uuid::new_v4().to_string();
+                    conn.execute(
+                        "INSERT INTO server_meta (id, generation) VALUES (1, ?1)",
+                        params![g],
+                    )?;
+                    Ok(g)
+                })
+                .await,
         }
     }
 
@@ -165,23 +330,25 @@ impl Db {
         if let Some(g) = self.get_group(id).await? {
             return Ok(g);
         }
-        let conn = self.writer.lock().await;
-        for _ in 0..10 {
-            let code = generate_code();
-            let taken: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM groups WHERE share_code = ?1",
-                params![code],
-                |r| r.get(0),
-            )?;
-            if taken == 0 {
-                conn.execute(
-                    "INSERT INTO groups (id, share_code, created_at) VALUES (?1, ?2, ?3)",
-                    params![id, code, now_ms()],
+        let id = id.to_string();
+        self.with_writer(move |conn| {
+            for _ in 0..10 {
+                let code = generate_code();
+                let taken: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM groups WHERE share_code = ?1",
+                    params![code],
+                    |r| r.get(0),
                 )?;
-                return Ok(Group { id: id.into(), share_code: code });
+                if taken == 0 {
+                    conn.execute(
+                        "INSERT INTO groups (id, share_code, created_at) VALUES (?1, ?2, ?3)",
+                        params![id, code, now_ms()],
+                    )?;
+                    return Ok(Group { id, share_code: code });
+                }
             }
-        }
-        anyhow::bail!("Could not allocate a unique share code")
+            anyhow::bail!("Could not allocate a unique share code")
+        }).await
     }
 
     /// Share codes are case-insensitive on resolve (Python does .upper()).
@@ -209,10 +376,14 @@ impl Db {
     /// Store incoming ops idempotently (dedup by op_id, incl. within-batch).
     /// Returns (accepted ops, current max cursor). Never mutates existing rows.
     pub async fn push_ops(&self, group_id: &str, ops: &[OperationWire]) -> Result<(Vec<OperationWire>, i64)> {
-        let conn = self.writer.lock().await;
-        Self::push_into(&conn, group_id, ops)
+        let group_id = group_id.to_string();
+        let ops = ops.to_vec();
+        self.with_writer(move |conn| Self::push_into(conn, &group_id, &ops)).await
     }
 
+    /// Store incoming ops idempotently (dedup by op_id, incl. within-batch).
+    /// Runs inside the writer batcher's open transaction — plain statements,
+    /// no BEGIN/COMMIT here. Returns (accepted ops, current max cursor).
     fn push_into(conn: &Connection, group_id: &str, ops: &[OperationWire]) -> Result<(Vec<OperationWire>, i64)> {
         if ops.is_empty() {
             return Ok((Vec::new(), Self::max_cursor(conn, group_id)?));
@@ -231,8 +402,7 @@ impl Db {
                 }
             }
         }
-        let tx = conn.unchecked_transaction()?;
-        let mut ins = tx.prepare(
+        let mut ins = conn.prepare(
             "INSERT INTO operations (op_id, group_id, entity, entity_id, action, payload, actor, lamport, created_at, received_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
@@ -256,9 +426,8 @@ impl Db {
             existing.insert(&o.op_id); // guard against duplicates within one request
             accepted.push(o.clone());
         }
-        drop(ins); // end the borrow before committing the transaction
-        tx.commit()?;
-        Ok((accepted, Self::max_cursor(&conn, group_id)?))
+        drop(ins); // end the borrow before the next statement
+        Ok((accepted, Self::max_cursor(conn, group_id)?))
     }
 
     /// Ops with seq > since in seq order. Empty result returns the REAL max
@@ -320,34 +489,41 @@ impl Db {
             let (rows, cursor) = self.with_reader(|conn| Self::pull_from(conn, group_id, since)).await?;
             return Ok((Vec::new(), rows, cursor));
         }
-        let conn = self.writer.lock().await;
-        let (accepted, _) = Self::push_into(&conn, group_id, ops)?;
-        let (rows, cursor) = Self::pull_from(&conn, group_id, since)?;
-        Ok((accepted, rows, cursor))
+        let group_id = group_id.to_string();
+        let ops = ops.to_vec();
+        self.with_writer(move |conn| {
+            let (accepted, _) = Self::push_into(conn, &group_id, &ops)?;
+            let (rows, cursor) = Self::pull_from(conn, &group_id, since)?;
+            Ok((accepted, rows, cursor))
+        }).await
     }
 
     pub async fn upsert_sub(&self, s: &Sub) -> Result<()> {
-        let conn = self.writer.lock().await;
-        conn.execute(
-            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, device_id, group_ids, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(endpoint) DO UPDATE SET p256dh=?2, auth=?3, device_id=?4, group_ids=?5, updated_at=?6",
-            params![
-                s.endpoint,
-                s.p256dh,
-                s.auth,
-                s.device_id,
-                serde_json::to_string(&s.group_ids)?,
-                now_ms()
-            ],
-        )?;
-        Ok(())
+        let s = s.clone();
+        self.with_writer(move |conn| {
+            conn.execute(
+                "INSERT INTO push_subscriptions (endpoint, p256dh, auth, device_id, group_ids, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(endpoint) DO UPDATE SET p256dh=?2, auth=?3, device_id=?4, group_ids=?5, updated_at=?6",
+                params![
+                    s.endpoint,
+                    s.p256dh,
+                    s.auth,
+                    s.device_id,
+                    serde_json::to_string(&s.group_ids)?,
+                    now_ms()
+                ],
+            )?;
+            Ok(())
+        }).await
     }
 
     pub async fn delete_sub(&self, endpoint: &str) -> Result<()> {
-        let conn = self.writer.lock().await;
-        conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?1", params![endpoint])?;
-        Ok(())
+        let endpoint = endpoint.to_string();
+        self.with_writer(move |conn| {
+            conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?1", params![endpoint])?;
+            Ok(())
+        }).await
     }
 
     pub async fn list_subs(&self) -> Result<Vec<Sub>> {

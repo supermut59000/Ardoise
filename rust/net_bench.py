@@ -17,7 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parity_check import free_port, start, register, PYV, RUST, ROOT, KEY
 from parity_check import http as req  # noqa: E402
 
-DB_RUST, DB_PY = "/tmp/netb-rust.db", "/tmp/netb-py.db"
+# DB_RUST is env-overridable so disk-wear runs can put the DB on a real
+# filesystem (tmpfs would mask all block I/O). RUST binary: swap on disk.
+DB_RUST, DB_PY = os.environ.get("DB_RUST", "/tmp/netb-rust.db"), "/tmp/netb-py.db"
 GID = "g-netb"
 N_SEED = 10_000
 REPS, REPS_SLOW = 7, 3

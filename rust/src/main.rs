@@ -115,7 +115,8 @@ async fn root(State(st): State<AppState>) -> Json<Value> {
 /// 503 (not a green "unhealthy" 200) so any monitor sees a DB outage as down.
 async fn health(State(st): State<AppState>) -> Response {
     if st.db.health().await {
-        Json(json!({ "status": "healthy" })).into_response()
+        Json(json!({ "status": "healthy", "commits": crate::db::Db::commit_count() }))
+            .into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "unhealthy", "db": "unreachable" }))).into_response()
     }
