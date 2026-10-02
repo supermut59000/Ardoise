@@ -35,6 +35,15 @@ WAVE = 50_000            # users spawned per wave (caps generator memory spikes)
 RAMP_RATE = int(os.environ.get("RAMP_RATE", "0"))  # users/s, 0 = full blast
 SYNC_TIMEOUT = 15.0      # s; a phone gives up even sooner
 RAMP_TIMEOUT = 120.0     # s per wave
+RUST_ONLY = os.environ.get("RUST_ONLY")   # skip python levels
+CGROUP = os.environ.get("CGROUP")         # cgroup dir: server pids moved in
+WRITE_PROB = float(os.environ.get("WRITE_PROB", "0.31"))      # storm default
+CATCHUP_PROB = float(os.environ.get("CATCHUP_PROB", "0.001")) # storm default
+
+def to_cgroup(pid):
+    if CGROUP:
+        with open(f"{CGROUP}/cgroup.procs", "a") as f:
+            f.write(f"{pid}\n")
 PROBE_WATCHERS = 100
 PROBE_INTERVAL = 5.0
 PORT = 0                 # set per level
@@ -157,9 +166,9 @@ async def user_task(uid, gid, stop, S, ramping):
                 break
             n += 1
             x = random.random()
-            if x < 0.001:
+            if x < CATCHUP_PROB:
                 ops = [mk_op(uid, n * 1000 + i, gid) for i in range(500)]
-            elif x < 0.31:
+            elif x < CATCHUP_PROB + WRITE_PROB:
                 ops = [mk_op(uid, n * 1000 + i, gid) for i in range(random.randint(1, 3))]
             else:
                 ops = []
@@ -470,6 +479,8 @@ async def main():
     p_rust = int(base_rust.rsplit(":", 1)[1])
     net_bench.wait_up(base_py)
     net_bench.wait_up(base_rust)
+    to_cgroup(py.pid)
+    to_cgroup(ru.pid)
     register(base_py, "g-probe")
     register(base_rust, "g-probe")
     dbs = {"python": net_bench.DB_PY, "rust": net_bench.DB_RUST}
@@ -479,11 +490,14 @@ async def main():
         for U in LEVELS:
             print(f"=== level {U} ===", flush=True)
             for name, holder in (("rust", rust_h), ("python", py_h)):
+                if name == "python" and RUST_ONLY:
+                    continue
                 t0 = time.monotonic()
                 if await alive(holder["port"]) is False:
                     print(f"  {name}: server dead, restarting", flush=True)
                     holder["p"], holder["port"] = await restart(
                         name, holder["p"], dbs[name])
+                    to_cgroup(holder["p"].pid)
                 res = await run_level(holder["port"], holder["p"].pid, U)
                 res["wall_s"] = round(time.monotonic() - t0, 1)
                 results[name][str(U)] = res

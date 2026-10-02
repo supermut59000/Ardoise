@@ -4,13 +4,17 @@
 //! The locks are async so a contended wait queues the task instead of
 //! parking a worker thread in a blocking std lock — that stall starved the
 //! event loop at ~14k concurrent users (loadtest 2026-09-19).
-//! ponytail: 8 fixed reader slots; bump READERS if reads ever contend.
+//! Readers are fixed slots, each its own mutex: a slot is always released
+//! by the guard's Drop, even if the task is cancelled mid-query. The old
+//! pop/push design leaked a connection on cancellation and drained the
+//! pool when a mass of clients disconnected at once (loadtest 2026-09-26).
+//! ponytail: 8 fixed slots; bump READERS if reads ever contend.
 
 use anyhow::Result;
 use rand::rngs::OsRng;
 use rand::Rng;
 use rusqlite::{params, Connection, OpenFlags};
-use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -49,7 +53,8 @@ const READERS: usize = 8;
 #[derive(Clone)]
 pub struct Db {
     writer: Arc<Mutex<Connection>>,
-    readers: Arc<Mutex<VecDeque<Connection>>>,
+    readers: Vec<Arc<Mutex<Connection>>>,
+    next: Arc<AtomicU64>,
 }
 
 pub fn open(path: &str) -> Result<Db> {
@@ -97,27 +102,30 @@ pub fn open(path: &str) -> Result<Db> {
         );",
     )?;
     // Read-only pool: WAL serves these alongside the single writer.
-    let mut readers = VecDeque::new();
-    for _ in 0..READERS {
-        let r = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        r.busy_timeout(Duration::from_millis(5_000))?;
-        readers.push_back(r);
-    }
-    Ok(Db { writer: Arc::new(Mutex::new(conn)), readers: Arc::new(Mutex::new(readers)) })
+    let readers: Vec<Arc<Mutex<Connection>>> = (0..READERS)
+        .map(|_| {
+            let r = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            r.busy_timeout(Duration::from_millis(5_000))?;
+            Ok(Arc::new(Mutex::new(r)))
+        })
+        .collect::<Result<_>>()?;
+    Ok(Db {
+        writer: Arc::new(Mutex::new(conn)),
+        readers,
+        next: Arc::new(AtomicU64::new(0)),
+    })
 }
 
 impl Db {
-    /// Run `f` on a pooled read-only connection. Slots run in parallel: the
-    /// pool lock is held only while a slot is popped/pushed, never during the
-    /// query. `f` is sync (no cancellation point between pop and push-back).
+    /// Run `f` on a round-robin read-only slot. The slot's mutex guard is
+    /// released on drop — a cancelled task never loses the connection.
     async fn with_reader<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
-        let conn = self.readers.lock().await.pop_back().expect("db reader pool drained");
-        let out = f(&conn);
-        self.readers.lock().await.push_back(conn);
-        out
+        let slot = &self.readers[self.next.fetch_add(1, Ordering::Relaxed) as usize % READERS];
+        let guard = slot.lock().await;
+        f(&guard)
     }
 
     /// Stable for one DB lifetime; a wiped DB gets a fresh generation.

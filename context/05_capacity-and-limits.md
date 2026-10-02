@@ -159,6 +159,36 @@ tests, full Python↔Rust parity (`rust/parity_check.py`).
 | Push notification TTL | 1 h | push_service.py |
 | String columns | group/entity ids 36, endpoint 500 | models |
 
+## Constrained-resources capacity (cgroup tests, 2026-09-26)
+
+Same box, server confined via cgroup v2 to **1 CPU (`cpu.max 100000 100000`)**
++ a RAM cap (`memory.max`, `memory.swap.max=0`); generator unrestricted.
+Write profile = real world, not the synthetic storm: 1000 ops/year/group,
+`WRITE_PROB≈1.6e-5` (≈0.2 ops/s at 12k users vs ~1 700 ops/s in the storm).
+Each user = 1 HTTP keep-alive + 1 SSE (2 sockets; the single-host generator
+caps around ~14k concurrent users = 28k ephemeral ports).
+
+| Config | 6k | 10k | 12k | 13k |
+|---|---|---|---|---|
+| 1 core + 1 GB | ✅ p50 0.92 ms, RSS 568 MB, CPU 25 % | ❌ **OOM kill at 8 693 users** | — | — |
+| 1 core + 2 GB | — | ✅ p50 0.92 ms, RSS 857 MB, CPU 42 % | ✅ p50 0.94 ms, RSS 1.13 GB, CPU 48 % | ✅ p50 0.91 ms, RSS 1.22 GB, CPU 51 % |
+
+All runs: p95 < 3 ms, p99 < 115 ms, 0 protocol errors, SSE wake p50 1–4 ms.
+RAM grows ~120 KB/user (server RSS + SQLite page cache). 2 GB + 1 core is
+bounded by RAM first (~17k extrapolated), CPU second (51 % at 13k).
+Per 1 000 users: 50 sync req/s, ~0.03 real writes/s — polling + SSE dominate,
+writes are negligible.
+
+**Bug found by these tests (fixed):** `with_reader` popped a connection out
+of the pool and pushed it back after the query. A task cancelled mid-query
+(client disconnect) never pushed back; a mass of simultaneous disconnects
+(20k sockets at a level transition) drained the 8-connection pool →
+`expect` panic → server death at 12k users. Fixed by replacing pop/push
+with 8 fixed slots, each behind its own `tokio::sync::Mutex`: the guard is
+released by `Drop` even on cancellation, a drained pool is no longer
+reachable. Verified: rebuild, 14/14 tests, FULL PARITY, 12k/13k constrained
+runs clean.
+
 ## RAM footprint (idle, docker stats)
 
 | Configuration | RSS |
