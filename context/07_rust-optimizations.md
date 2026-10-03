@@ -7,8 +7,8 @@ throughout:
 - **A/B protocol (fiche 06):** Python stack (uvicorn + SQLAlchemy) vs Rust,
   same N100, same 10k-op seed, median of 7, loopback. The Python side is
   the "before".
-- **Constrained-box profile (fiche 05):** 12-core / 30 GB server box for
-  ceiling runs, 1 core + 1 GB cgroup for the small-box budget.
+- **Constrained-box profile (fiche 08):** 1 core + 1 GB cgroup for the
+  small-box budget; 12-core / 30 GB box for ceiling runs (fiche 05).
 
 ## 1. The rewrite itself (2026-09-16)
 
@@ -48,7 +48,7 @@ Wakes carry no data; the pull is the source of truth, so a missed wake is
 harmless (the 20 s poll catches up).
 
 Measured: removes the Python 15-stream wall (above); 17k SSE sockets on
-one tokio worker carried in the 1c+1GB run (fiche 05); per-socket cost
+one tokio worker carried in the 1c+1GB run (fiche 08); per-socket cost
 92.6 KB, breakdown in section 5.
 
 ## 4. Reader pool: 8 fixed drop-safe slots (2026-09-26, d50e9f8)
@@ -72,26 +72,73 @@ KB, so it is not a glibc arena issue) + ~8 KB kernel sockets + ~2.5 KB
 page cache. Idle process: 24 MB = 12 tokio worker stacks x 2 MB + SQLite.
 
 Impact: RAM binds before CPU on small boxes. 1c+1GB: OOM at 8 693 users
-with ~35% CPU (fiche 05 budget table). This number is also the unit of
+with ~35% CPU (fiche 08 budget table). This number is also the unit of
 account for section 7.
 
 ## 6. Async writer + group commit (2026-09-26, 932f32d)
 
-Problem: one commit per write = one fsync per write (SD card wear, and
-50-100 ms tail latency on cheap storage).
+Problem: every write was its own transaction + commit + fsync. In a burst
+(870 write requests/s at 12k storm users) that is ~870 fsync/s of disk
+wear; the real profile is ~0.2 writes/s. Goal: cap the commit rate at
+10/s under bursts, unchanged at idle.
 
-Fix: one batcher task owns the writer connection; ops accumulate and
-flush at FLUSH_MS=100 / GRACE_MS=50 / FLUSH_N=100; the HTTP response goes
-out only after the commit (no lost ack); `/health` exposes COMMITS.
+How: a dedicated batcher task owns the writer `Connection` (never shared,
+no lock). All write paths (`server_generation`, `register_group`,
+`push_ops`, `sync_ops`, `upsert_sub`, `delete_sub`) queue a closure via
+an `mpsc` channel and await a oneshot reply. The batcher drains what is
+already queued (cap `FLUSH_N = 100` writes per batch); a write arriving
+to an empty queue waits `GRACE_MS = 50` for a following write before
+committing alone; a concurrent burst waits out the 100 ms window
+(`FLUSH_MS`) so it lands in one commit; the batch applies in one
+transaction, one commit. A failed statement aborts the batch: ROLLBACK,
+every job in it gets an error (all writes are idempotent, clients retry).
 
-Measured (A/B at 93 write req/s on btrfs): 8.5 commits/s vs ~93 before
-(11x fewer fsyncs); block writes -43%; a solo write costs +50 ms (the
-grace window, not real latency); SSE wake p50 ~56 ms. Writer capacity
-~1 000 ops/s vs ~1.8 ops/s real peak at 8k users (fiche 05). Two
-measurement bugs were caught by the A/B and fixed in the same session: a
-solo-flush leak (the batcher kept a last op past its deadline) and
-`server_generation()` routing through the writer (now seeded at open,
-read on the pool).
+Crash safety (kept): the reply lands **after** the commit. A crash inside
+the window ACKs nothing; the client re-pushes and the `op_id` unique
+index makes the replay a no-op.
+
+Latency cost: a solo write is ACKed up to 50 ms (grace) after arrival;
+a burst up to 150 ms (grace + window). Invisible against the 20 s sync
+cadence. SSE publish happens after the write returns, so events still
+follow the commit.
+
+Measured (6k-user write storm, 31% of syncs carry writes = ~93 write
+requests/s sustained, DB on btrfs, 1 core + 2 GB, staggered joins):
+
+| | per-write commit (before) | group commit (after) |
+|---|---|---|
+| commits = fsyncs/s | ~93 (1 per write) | **8.5** (100 ms window cap) |
+| block writes | 2.4-3.1 MiB/5 s | 1.3-1.9 MiB/5 s (-43%) |
+| 6k joined / errors | 6 000 / 0 | 6 000 / 0 |
+| sync p50 | 2.2 ms | 2.3 ms (read-only syncs unchanged) |
+| sync p95 | 23.6 ms | 112.6 ms (write-carrying syncs pay the window) |
+| CPU | 74.6% | 66.8% |
+
+11x fewer fsyncs, the wear-relevant metric (the byte reduction is
+smaller because op data dominates page-cache writeback). Commit count
+exposed in `/health` (`commits`) since this change. No regression in the
+real profile: 12k / 13k clean. Writer capacity ~1 000 ops/s vs ~1.8
+ops/s real peak at 8k users (fiche 08).
+
+Two bugs the first measurements caught, both fixed before the numbers
+above:
+
+1. **No-grace leak:** without the grace, a steady 93 writes/s streamed
+   through as one commit per write (each arrival finds an empty queue):
+   measured 97.6 commits/s, zero batching.
+2. **Reads misrouted to the writer:** `server_generation()` (called by
+   every `/sync`) went through the writer, so the grace added 50 ms to
+   every read-only sync (12k p50 went 1.2 ms -> 57 ms). Fixed by seeding
+   `server_meta.generation` once at open and reading it on the reader
+   pool; after the fix, read-only syncs stay at p50 ~2 ms.
+
+Harness finding (not a server limit): `RAMP_RATE=0` = 12k users
+connecting + SSE + first sync all at t=0; a 1-core server cannot finish
+those joins inside the 15 s harness timeout (~2k join, ~10k time out,
+identically on the pre-batching binary, server CPU ~18%). Staggered
+joins (`RAMP_RATE=100`) pass 12k-13k clean on both binaries. If a real
+deployment ever joins thousands of clients in one instant, the fix is
+client-side join jitter, not server capacity.
 
 ## 7. One SSE stream per user: multi-group wake (2026-10-03)
 

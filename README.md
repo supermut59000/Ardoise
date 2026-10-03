@@ -53,7 +53,10 @@ docker compose run --rm --no-deps -v ./backend:/app backend \
 Sizing numbers for the Rust backend (single static binary). The Python
 backend caps at ~15 concurrent SSE streams (sync SQLAlchemy on the event
 loop) and is not a sizing option. Full data and method:
-[context/05_capacity-and-limits.md](context/05_capacity-and-limits.md).
+[context/05_capacity-and-limits.md](context/05_capacity-and-limits.md)
+(max users, p50/p99); the 1 core + 1 GB box profile and its deploy
+checklist live in
+[context/08_small-box.md](context/08_small-box.md).
 
 Per connected user: ~93 KB RAM, 2 sockets (keep-alive + SSE), 1 sync/20 s.
 One SSE stream per user no matter how many groups they join (2026-10-03,

@@ -14,9 +14,19 @@ Goal: split shared group expenses, simpler than Tricount, **you own the data** (
 | [02_sync-and-offline.md](02_sync-and-offline.md) | The operation-log sync engine, offline/PWA constraints | **Always** |
 | [03_decisions.md](03_decisions.md) | Decision ledger (what was decided, when, and why) | **Always** |
 | [04_roadmap.md](04_roadmap.md) | Phased roadmap and current build status | On demand |
-| [05_capacity-and-limits.md](05_capacity-and-limits.md) | Measured storage/timing/RAM numbers, hard limits, constrained-box (1 core + 1 GB / Pi 3B+ class) capacity, architectural ceilings | On demand |
-| [06_rust-rewrite.md](06_rust-rewrite.md) | Rust port: A/B measurements, network contract, how to run/verify | On demand |
-| [07_rust-optimizations.md](07_rust-optimizations.md) | Rust optimization ledger: every change with its measured impact | On demand |
+| [05_capacity-and-limits.md](05_capacity-and-limits.md) | Capacity numbers: max concurrent users, latency p50/p99 (loopback and degraded network), storage, hard limits, architectural ceilings | On demand |
+| [06_rust-rewrite.md](06_rust-rewrite.md) | Rust port: A/B measurements Python vs Rust, network contract, how to run/verify | On demand |
+| [07_rust-optimizations.md](07_rust-optimizations.md) | Rust levers: every optimization applied (reader pool, group commit, one stream per user...) with its measured impact | On demand |
+| [08_small-box.md](08_small-box.md) | 1 core + 1 GB box: does it fit, ~8k concurrent budget, daily/monthly sizing, deploy checklist | On demand |
+
+**Which file for which question** (quick map):
+
+- "How much can it do?" (max users, latency p50/p99) -> **05**
+- "Will it fit my Pi / small box?" -> **08**
+- "What did we change in Rust and what did it gain?" -> **07**
+- "Python or Rust?" -> **06**
+- "Why this design / what was decided?" -> **03**
+- "How does sync / offline work?" -> **01 + 02**
 
 ## Current state (2026-08-13)
 
