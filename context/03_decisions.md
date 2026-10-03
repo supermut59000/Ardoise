@@ -360,3 +360,12 @@ Ran `/app-audit` again; the user chose to fix B1, B2, B3, F1, S1, S2 with discri
 - **S2 - QR fragment in an already-open tab** ([use-automatic-invite.ts](../frontend-react/src/hooks/use-automatic-invite.ts)): the invite fragment is now consumed on `hashchange` too, not just on mount. A same-tab navigation to `/#join=...&key=...` (no page reload) used to leave the shared password in the address bar and never join; now it joins and erases the credentials, matching the DEPLOY.md guarantee.
 - *Rationale*: user requested the whole B1-S2 range; each fix ships with a test whose expected value differs before/after.
 - *Status*: active.
+
+### D42 - 2026-10-03 - One SSE stream per user: multi-group wake endpoint (Rust-only)
+
+`GET /groups/events?groups=a,b,c` serves one SSE wake stream for all of a user's groups (frame `event: op` + `{"group":"<id>","seq":N}`, cap 50 groups, unknown ids skipped, 400 empty / 404 none known). The frontend opens a single stream per user, reconciled when the set of shared groups changes, so a user in G groups holds 1 connection instead of G: per-user cost drops from G x (stream + 20 s poll) to 1 x (stream + 20 s poll), roughly halving per-user RAM for fleets averaging 2 groups (fiche 07 section 7).
+
+- *Rationale*: fiche 05 flagged the per-group client cost as the remaining client-side lever; at 92.6 KB per concurrent user, it is the binding one on small boxes whenever the average user sits in 2 or more groups.
+- *How*: fan each group's in-process broadcast channel into one mpsc per connection (a forwarder exits when its send errors, i.e. when the client dropped the stream, so no task outlives the connection). Frontend: `openGroupEventStreams` in `client.ts`, multi-stream reconciliation in `use-sync.ts`.
+- *Divergence from the maintenance rule*: this is a Rust-only endpoint; the Python backend has no equivalent. Documented exception to "contract changes land in Python first" (fiche 06) because the Python stack physically cannot hold the streams this removes (15-stream wall). The frontend falls back to per-group streams on 404, so a deployment behind the Python backend keeps working unchanged.
+- *Status*: active. Verified by 16/16 Rust tests, 180/180 frontend tests, 18/18 network parity, and a live smoke test.

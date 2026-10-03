@@ -152,10 +152,13 @@ Before: every device change cost TWO requests (push, then poll). After:
   re-sync catches up — the stream never carries truth).
 - Client (`frontend-react`): the engine does per-batch `/sync` (500 ops each,
   mark-synced as it lands, self-heal generation/cursor logic unchanged); the
-  hook keeps one SSE stream per shared group (reconciled after each pass,
-  reconnect backoff 1 s → 30 s, `fetch` + `ReadableStream` because
-  `EventSource` cannot send `X-API-Key`) and keeps the 20 s poll as the
-  fallback for SSE-unfriendly proxies.
+  hook keeps ONE SSE stream per user for all shared groups: Rust endpoint
+  `GET /groups/events?groups=a,b,c` (wake frame carries the group id, cap
+  50), reconciled when the group set changes (reconnect backoff 1 s → 30 s,
+  `fetch` + `ReadableStream` because `EventSource` cannot send `X-API-Key`);
+  on 404 it falls back to one stream per shared group (Python backend,
+  which has no multi endpoint: documented divergence, fiche 07 §7); the 20 s
+  poll stays as the fallback for SSE-unfriendly proxies.
 
 A/B parity matrix (`rust/parity_check.py`, both backends live, 18/18 green on
 2026-09-18): register; `/sync` accepted/cursor/ops body/serverGeneration;

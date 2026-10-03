@@ -292,3 +292,89 @@ client-side join jitter, not server capacity.
 Append-only consequences (tombstones, local-only groups, per-browser
 localStorage) are covered in [02](02_sync-and-offline.md) and
 [03](03_decisions.md) — not repeated here.
+
+## Small box: 1 core + 1 GB, summer profile (2026-09-26)
+
+Target deployment: a very constrained box (Raspberry Pi 3B+ class, 1 core +
+1 GB reserved for the app). Target activity profile: summer, 5–8
+ops/day/group, 80 % of the day's ops in the 14h–22h window (8 h), reads ≈
+10× writes.
+
+**Write rate is not the sizing dimension.** Worst case (1 group per user,
+8k users): 8 ops/day × 0.8 ÷ 8 h = 0.8 ops/h/group → ~1.8 ops/s at the
+peak. Group commit turns that into ≤10 fsync/s (measured 8.5 commits/s
+under a 93 writes/s burst). Writer capacity is ~1 000 ops/s: 3–4 orders of
+magnitude of headroom. Reads ×10 → ~18/s ≈ 9 % of one core (0.5 ms
+lookup). The real per-user cost is the polling baseline: 1 sync/20 s + 1
+SSE = 2 sockets + ~93 KB RAM (breakdown above).
+
+| Budget | Concurrent users | Notes |
+|---|---|---|
+| 1 core + 1 GB, x86 (measured, cgroup) | **~8 000** | OOM kill at 8 693 (table above); CPU ~35 % (interpolated 6k→10k) → RAM binds, not the core |
+| Pi 3B+ (1 core + 1 GB, extrapolated) | **~5–8k** | ARM A53 ≈ 0.35–0.5× an x86 core, ±50 %. A real 3B+ has 4 cores, but at 1 GB the OOM hits first, so the core count does not change the number |
+| 1 core + 2 GB (measured / extrapolated) | ~13k clean / ~15–17k | the only upgrade that pays at 1 core: 2 GB ≈ 2× users (e.g. Pi 4 2 GB) |
+
+**Daily / monthly sizing.** Daily users = concurrent ÷ c, where c = share
+of the fleet connected at the 14h–22h peak — the only number only the
+operator knows; calibrate on real data (apps open at a given afternoon hour
+÷ total fleet).
+
+| c | 1 core + 1 GB (8k) | Pi 3B+ (5–8k) |
+|---|---|---|
+| 30 % (very synchronized fleet) | ~27k | 17–27k |
+| **10 % (reference: ~40 min presence/day spread over 8 h)** | **~80k** | **50–80k** |
+| 5 % (spread out) | ~160k | 100–160k |
+
+Monthly (users active over the month) ≈ daily × 30 ÷ active-days-per-user;
+at 10 active days/user that is ≈ 3× daily (fleet estimate,
+usage-dependent — not a server limit).
+
+**Deployment on 1 core + 1 GB** — no code or concurrency changes needed:
+- `LimitNOFILE=65536` in the service unit (default 1024 FDs caps at ~500
+  users, far before RAM). The only config line that matters.
+- No tokio worker tuning: M:N scheduler, 1 worker per core by default; the
+  measured 1c+1GB run carried ~17k sockets on 1 worker.
+- No `READERS` change: the 8 slots run at ~15 % at 8k users; more slots on
+  a single core adds mutex contention with no parallelism gain (raise it
+  only on multi-core boxes, see below).
+- Group commit defaults are fine (≤10 fsync/s at this load); SD card A2
+  recommended.
+- Validate on site: `rust/loadtest.py` from a second host, `RAMP_RATE=100`,
+  `LEVELS=1000,3000,5000,8000` (~1 h) turns the extrapolation into a number.
+
+## Architectural ceilings (walls, in order of height)
+
+Three stacked choices, from fundamental to arbitrary:
+
+1. **SQLite single writer** (WAL: N readers + 1 writer) — physical to
+   SQLite, deliberate (D32). Not reached at real write rates (≤300 ops/s
+   at 1 M daily users vs ~1 000 ops/s capacity); group commit hides it
+   (≤10 fsync/s).
+2. **`READERS = 8`** (`rust/src/db.rs:61`) — the practical wall, and the
+   only arbitrary one. A steady `/sync` takes the read pool **3 times**
+   (`get_group` + `pull` + `server_generation`); each slot serves ~1 000–
+   1 500 q/s (sub-ms indexed lookups + mutex). 8 slots × ~1 200 ÷ 3 ≈
+   3 200 syncs/s ≈ **50–100k concurrent** (extrapolated, 12-core box).
+   Beyond the slots, adding cores does nothing — a vertical choke on
+   horizontal hardware. One-line fix (`READERS = 64`) moves the wall to the
+   RAM ceiling (~200k on the 30 GB box). Invisible on a 1-core box: the RAM
+   wall hits at ~8k first.
+3. **Single process** — 93 KB RAM/user (measured) → ~200k concurrent on the
+   30 GB box, and one point of failure (crash drops all SSE; clients
+   reconnect, the log is reconstructible — D32). Beyond one process: shard
+   by group — the sync contract is already per-group (the URL carries the
+   group id), so N instances × N files routed by group id. Nothing to
+   rewrite.
+
+Contrast: the Python ~15-SSE wall is a real bug (synchronous SQLAlchemy in
+the event loop, pool 5+10 pinned, 16th checkout freezes the loop 30 s).
+The Rust walls are design ceilings with a designed exit: #2 is one
+constant, #3 is sharding.
+
+**Client-side lever (done 2026-10-03, fiche 07 §7):** the frontend now
+holds ONE SSE stream per user for all shared groups
+(`GET /groups/events?groups=a,b,c`, wake frame carries the group id, 50
+groups cap; Python fallback to per-group streams on 404). Per-user cost is
+G x (1 stream + 20 s poll) reduced to 1 stream + 20 s poll: a fleet
+averaging 2 groups per user halves per-user RAM (the 93 KB/socket unit of
+section "Small box"), roughly doubling the 1 GB ceiling for such fleets.

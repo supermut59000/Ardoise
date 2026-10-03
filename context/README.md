@@ -14,7 +14,9 @@ Goal: split shared group expenses, simpler than Tricount, **you own the data** (
 | [02_sync-and-offline.md](02_sync-and-offline.md) | The operation-log sync engine, offline/PWA constraints | **Always** |
 | [03_decisions.md](03_decisions.md) | Decision ledger (what was decided, when, and why) | **Always** |
 | [04_roadmap.md](04_roadmap.md) | Phased roadmap and current build status | On demand |
-| [05_capacity-and-limits.md](05_capacity-and-limits.md) | Measured storage/timing/RAM numbers and hard limits | On demand |
+| [05_capacity-and-limits.md](05_capacity-and-limits.md) | Measured storage/timing/RAM numbers, hard limits, constrained-box (1 core + 1 GB / Pi 3B+ class) capacity, architectural ceilings | On demand |
+| [06_rust-rewrite.md](06_rust-rewrite.md) | Rust port: A/B measurements, network contract, how to run/verify | On demand |
+| [07_rust-optimizations.md](07_rust-optimizations.md) | Rust optimization ledger: every change with its measured impact | On demand |
 
 ## Current state (2026-08-13)
 

@@ -115,50 +115,44 @@ export function syncOps(
 }
 
 /**
- * Live wake-up: `/groups/{id}/events` is an SSE stream on which the server
- * sends a minimal `event: op` frame (`{"seq": N}`) whenever new ops land for
- * the group. The frame carries only the wake-up, never the data: the caller
- * re-syncs to get the actual ops. `EventSource` cannot send the X-API-Key
- * header, hence fetch + ReadableStream.
- *
- * Resolves when the stream ends (server close, proxy idle timeout, network
- * drop); the caller is expected to reconnect with backoff. Rejects on non-2xx
- * (e.g. 401/404 as a SyncError). Aborting the signal ends the stream cleanly.
+ * Open a wake stream. `EventSource` cannot send the X-API-Key header, hence
+ * fetch + ReadableStream. Rejects on non-2xx (e.g. 401/404 as a SyncError).
  */
-export async function openEventStream(groupId: string, onOp: () => void, signal: AbortSignal): Promise<void> {
+async function openSse(url: string, signal: AbortSignal): Promise<Response> {
   const key = getApiKey()
   let res: Response
   try {
-    res = await fetch(`${API_BASE}/groups/${encodeURIComponent(groupId)}/events`, {
+    res = await fetch(url, {
       signal,
       headers: { Accept: 'text/event-stream', ...(key ? { 'X-API-Key': key } : {}) },
     })
   } catch (e) {
-    if (signal.aborted) return
     throw new SyncError(e instanceof Error ? e.message : 'network error')
   }
   if (!res.ok || !res.body) throw new SyncError(`HTTP ${res.status}`, res.status)
+  return res
+}
 
-  const reader = res.body.getReader()
+/**
+ * Shared SSE body reader for both wake streams. Frames are separated by a
+ * blank line; a frame may arrive split across chunks, so buffer until the
+ * terminator is complete. Comments (": connected", ": keepalive") arrive as
+ * ('message', '') and are ignored by the callers. Resolves when the stream
+ * ends (server close, proxy idle timeout, network drop); the caller
+ * reconnects with backoff.
+ */
+async function readSseFrames(
+  body: ReadableStream<Uint8Array>,
+  onFrame: (event: string, data: string) => void,
+): Promise<void> {
+  const reader = body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
   try {
-    await readLoop()
-  } catch (e) {
-    // Aborting ends the stream cleanly; anything else is a real error.
-    if (signal.aborted) return
-    throw e
-  } finally {
-    reader.releaseLock()
-  }
-
-  async function readLoop(): Promise<void> {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) return
       buf += decoder.decode(value, { stream: true })
-      // Frames are separated by a blank line. A frame may arrive split across
-      // chunks, so buffer until the terminator is complete.
       let nl: number
       while ((nl = buf.indexOf('\n\n')) >= 0) {
         const frame = buf.slice(0, nl)
@@ -169,13 +163,69 @@ export async function openEventStream(groupId: string, onOp: () => void, signal:
           if (line.startsWith('event:')) event = line.slice(6).trim()
           else if (line.startsWith('data:')) data += line.slice(5).trim()
         }
-        // Comments (": connected", ": keepalive") and lagged markers fall
-        // through: they set no event/data. Anything but a clean `op` wake-up
-        // (e.g. a lag marker) is covered by the re-sync itself + the polling
-        // fallback.
-        if (event === 'op' && data) onOp()
+        onFrame(event, data)
       }
     }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+/**
+ * Live wake-up: `/groups/{id}/events` is an SSE stream on which the server
+ * sends a minimal `event: op` frame (`{"seq": N}`) whenever new ops land for
+ * the group. The frame carries only the wake-up, never the data: the caller
+ * re-syncs to get the actual ops.
+ *
+ * Resolves when the stream ends (server close, proxy idle timeout, network
+ * drop); the caller is expected to reconnect with backoff. Rejects on non-2xx
+ * (e.g. 401/404 as a SyncError). Aborting the signal ends the stream cleanly.
+ */
+export async function openEventStream(groupId: string, onOp: () => void, signal: AbortSignal): Promise<void> {
+  const res = await openSse(`${API_BASE}/groups/${encodeURIComponent(groupId)}/events`, signal)
+  try {
+    await readSseFrames(res.body!, (event, data) => {
+      // Only a clean `op` wake-up matters; anything else is covered by the
+      // re-sync itself + the polling fallback.
+      if (event === 'op' && data) onOp()
+    })
+  } catch (e) {
+    // Aborting ends the stream cleanly; anything else is a real error.
+    if (signal.aborted) return
+    throw e
+  }
+}
+
+/**
+ * One live wake-up stream for ALL of a group list (Rust endpoint
+ * `/groups/events?groups=a,b,c`): a user in G groups holds 1 connection
+ * instead of G. Frame: `event: op` + `data: {"group":"<id>","seq":N}` — the
+ * wake-up names its group; the caller re-syncs to get the actual ops.
+ *
+ * The Python backend has no such endpoint (404); `useSync` falls back to one
+ * stream per group in that case. Same abort/reconnect contract as
+ * `openEventStream`.
+ */
+export async function openGroupEventStreams(
+  groupIds: string[],
+  onOp: (groupId: string) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const qs = groupIds.map((g) => encodeURIComponent(g)).join(',')
+  const res = await openSse(`${API_BASE}/groups/events?groups=${qs}`, signal)
+  try {
+    await readSseFrames(res.body!, (event, data) => {
+      if (event !== 'op' || !data) return
+      try {
+        const frame = JSON.parse(data) as { group?: string }
+        if (frame.group) onOp(frame.group)
+      } catch {
+        /* malformed frame (proxy interference): skip, re-sync covers it */
+      }
+    })
+  } catch (e) {
+    if (signal.aborted) return
+    throw e
   }
 }
 

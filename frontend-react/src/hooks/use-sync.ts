@@ -76,10 +76,17 @@ export function useSync() {
       debounce = window.setTimeout(trigger, 800) // then push it promptly
     }
 
-    // Live wake-up: one SSE stream per shared group. On `event: op` the
-    // stream has told us something landed on the server, so run the normal
-    // sync pass (the wake-up carries no data). On stream end, reconnect with
-    // exponential backoff (1s -> 30s); the 20s polling below covers any gap.
+    // Live wake-up: ONE SSE stream for ALL shared groups (Rust endpoint
+    // /groups/events) — a user in G groups holds 1 connection instead of G.
+    // On `event: op` the stream has told us something landed on the server,
+    // so run the normal sync pass (the wake-up carries no data, and the pass
+    // covers every group). If the backend has no multi endpoint (Python:
+    // 404), fall back for the session to one stream per group. On stream end,
+    // reconnect with exponential backoff (1s -> 30s); the 20s polling below
+    // covers any gap.
+    let multi: AbortController | null = null
+    let multiKey = ''
+    let perGroupMode = false
     const streams = new Map<string, AbortController>()
     const streamLoop = (gid: string, ac: AbortController) => {
       let delay = 1_000
@@ -97,14 +104,7 @@ export function useSync() {
         }
       })()
     }
-    reconcileStreams.current = async () => {
-      let states: { groupId: string }[]
-      try {
-        states = await db.syncState.toArray()
-      } catch {
-        return
-      }
-      const ids = new Set(states.map((s) => s.groupId))
+    const reconcilePerGroup = (ids: Set<string>) => {
       for (const [gid, ac] of streams) {
         if (!ids.has(gid)) {
           ac.abort() // left/deleted the group: drop its stream
@@ -118,6 +118,53 @@ export function useSync() {
         streamLoop(gid, ac)
       }
     }
+    const openMulti = (ids: string[]) => {
+      const ac = new AbortController()
+      multi = ac
+      let delay = 1_000
+      void (async () => {
+        while (!ac.signal.aborted) {
+          try {
+            await client.openGroupEventStreams(ids, () => trigger(), ac.signal)
+            delay = 1_000 // clean close (server restart): retry promptly
+          } catch (e) {
+            if (ac.signal.aborted) return
+            if (e instanceof client.SyncError && e.status === 404) {
+              // Backend without the multi endpoint (Python): per-group mode
+              // for the rest of the session.
+              perGroupMode = true
+              multi = null
+              multiKey = ''
+              reconcilePerGroup(new Set(ids))
+              return
+            }
+          }
+          if (ac.signal.aborted) return
+          await new Promise((r) => setTimeout(r, delay))
+          delay = Math.min(delay * 2, 30_000)
+        }
+      })()
+    }
+    reconcileStreams.current = async () => {
+      let states: { groupId: string }[]
+      try {
+        states = await db.syncState.toArray()
+      } catch {
+        return
+      }
+      const ids = new Set(states.map((s) => s.groupId))
+      if (perGroupMode) {
+        reconcilePerGroup(ids)
+        return
+      }
+      const key = [...ids].sort().join(',')
+      if (key === multiKey) return
+      multiKey = key
+      multi?.abort()
+      multi = null
+      if (!key) return
+      openMulti(key.split(','))
+    }
 
     trigger()
     void refreshPending.current()
@@ -127,6 +174,7 @@ export function useSync() {
     window.addEventListener(LOCAL_CHANGE_EVENT, onLocalChange)
     const id = window.setInterval(trigger, 20_000)
     return () => {
+      multi?.abort()
       for (const ac of streams.values()) ac.abort()
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)

@@ -322,17 +322,115 @@ async fn group_events(
             Err(broadcast::error::RecvError::Closed) => None,
         }
     });
+    sse_response(stream)
+}
+
+/// Shared SSE response shape for both wake streams: 15 s keep-alive comment +
+/// the headers nginx and the parity matrix check. Sse::into_response sets
+/// Cache-Control: no-cache; axum 0.8 removed tuple IntoResponse, so the rest
+/// goes through the builder. Starlette emits "text/event-stream; charset=utf-8"
+/// — match it for A/B parity.
+fn sse_response<S>(stream: S) -> Response
+where
+    S: futures_util::Stream<Item = Result<Event, Infallible>> + Send + 'static,
+{
     let sse = Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive"));
-    // Sse::into_response sets Cache-Control: no-cache; axum 0.8 removed tuple
-    // IntoResponse, so the rest goes through the builder. Starlette emits
-    // "text/event-stream; charset=utf-8" — match it for A/B parity.
     let mut resp = sse.into_response();
     resp.headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8"));
     resp.headers_mut()
         .insert(HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no"));
     resp
+}
+
+/// One SSE wake-up stream for ALL of a user's groups: the connection-saving
+/// endpoint (a user in G groups opens 1 stream instead of G). Frame:
+/// `event: op` + `data: {"group":"<id>","seq":N}` — same wake-up semantics as
+/// the per-group stream, plus which group fired. Rust-only: the Python
+/// backend has no equivalent (documented divergence, context/07); the frontend
+/// falls back to per-group streams on 404.
+const MAX_STREAM_GROUPS: usize = 50; // ponytail: abuse cap, not a product limit
+
+#[derive(Deserialize)]
+struct MultiGroups {
+    groups: Option<String>,
+}
+
+struct MultiWake {
+    rx: tokio::sync::mpsc::Receiver<(String, u64)>,
+    first: bool,
+}
+
+async fn user_events(State(st): State<AppState>, Query(q): Query<MultiGroups>) -> Response {
+    // Dedupe, keep order.
+    let mut ids: Vec<String> = Vec::new();
+    for s in q.groups.as_deref().unwrap_or_default().split(',') {
+        let s = s.trim();
+        if !s.is_empty() && !ids.iter().any(|x| x == s) {
+            ids.push(s.to_string());
+        }
+    }
+    if ids.is_empty() {
+        return detail(StatusCode::BAD_REQUEST, "paramètre 'groups' vide");
+    }
+    if ids.len() > MAX_STREAM_GROUPS {
+        return detail(StatusCode::BAD_REQUEST, format!("max {MAX_STREAM_GROUPS} groupes par stream"));
+    }
+    // Unknown ids are skipped (a stale local subscription must not kill the
+    // stream); nothing known = 404, like the per-group endpoint.
+    let mut known: Vec<String> = Vec::new();
+    for id in &ids {
+        match st.db.get_group(id).await {
+            Ok(Some(_)) => known.push(id.clone()),
+            Ok(None) => {}
+            Err(e) => return detail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        }
+    }
+    if known.is_empty() {
+        return detail(StatusCode::NOT_FOUND, "Groupe non enregistre");
+    }
+    // Fan each group's broadcast channel into one mpsc; the SSE body reads
+    // only that. A forwarder exits when its send errors, i.e. when the client
+    // dropped the stream — so no task outlives the connection.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, u64)>(256);
+    for gid in known {
+        let mut wrx = st.events.subscribe(&gid);
+        let gtx = tx.clone();
+        let name = gid.clone();
+        tokio::spawn(async move {
+            loop {
+                match wrx.recv().await {
+                    Ok(seq) => {
+                        if gtx.send((name.clone(), seq)).await.is_err() {
+                            return;
+                        }
+                    }
+                    // Lagged (>64 wakes behind): drop this one wake; the
+                    // client's next wake or 20 s poll re-syncs, same as the
+                    // per-group stream.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+    let stream = futures_util::stream::unfold(MultiWake { rx, first: true }, |mut w| async move {
+        if w.first {
+            w.first = false;
+            return Some((Ok::<_, Infallible>(Event::default().comment("connected")), w));
+        }
+        match w.rx.recv().await {
+            Some((group, seq)) => Some((
+                Ok(Event::default()
+                    .event("op")
+                    .data(serde_json::json!({ "group": group, "seq": seq }).to_string())),
+                w,
+            )),
+            None => None,
+        }
+    });
+    sse_response(stream)
 }
 
 #[derive(Deserialize)]
@@ -526,6 +624,7 @@ fn build_app(state: AppState) -> Router {
         .route("/groups/{group_id}", get(get_group))
         .route("/groups/{group_id}/ops", post(push_ops).get(pull_ops))
         .route("/groups/{group_id}/sync", post(sync_ops))
+        .route("/groups/events", get(user_events))
         .route("/groups/{group_id}/events", get(group_events))
         .route("/push/vapid-public-key", get(vapid_public_key))
         .route("/push/subscribe", post(subscribe))
@@ -588,21 +687,29 @@ mod tests {
         app.clone().oneshot(req).await.unwrap().status()
     }
 
-    fn op_json(op_id: &str) -> Value {
+    fn op_json_for(op_id: &str, group: &str) -> Value {
         json!({
-            "opId": op_id, "groupId": "g1", "entity": "expense", "entityId": "e1",
+            "opId": op_id, "groupId": group, "entity": "expense", "entityId": "e1",
             "action": "create", "payload": {"amountCents": 5}, "actor": "dev",
             "lamport": 1, "createdAt": 1,
         })
     }
 
-    fn sync_req(body: Value) -> Request<Body> {
+    fn op_json(op_id: &str) -> Value {
+        op_json_for(op_id, "g1")
+    }
+
+    fn sync_req_to(group: &str, body: Value) -> Request<Body> {
         Request::builder()
             .method("POST")
-            .uri("/api/v1/groups/g1/sync")
+            .uri(format!("/api/v1/groups/{group}/sync"))
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap()
+    }
+
+    fn sync_req(body: Value) -> Request<Body> {
+        sync_req_to("g1", body)
     }
 
     #[tokio::test]
@@ -650,6 +757,67 @@ mod tests {
         // Unregistered group: 404, never a stream.
         let req = Request::builder().uri("/api/v1/groups/ghost/events").body(Body::empty()).unwrap();
         assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn multi_events_one_stream_and_error_paths() {
+        let app = build_app(test_state("multi"));
+        assert_eq!(register(&app, "g1").await, StatusCode::OK);
+        assert_eq!(register(&app, "g2").await, StatusCode::OK);
+        // Dedupe + unknown ids are skipped: g1 appears twice, ghost is not
+        // registered — the stream still opens for the two known groups.
+        let req = Request::builder()
+            .uri("/api/v1/groups/events?groups=g1,g2,ghost,g1%20")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream"));
+        // Body is an infinite stream: header check only; dropping the response
+        // drops the receivers and the forwarder tasks.
+        // Unknown-only list: 404. Empty list: 400.
+        let req = Request::builder().uri("/api/v1/groups/events?groups=ghost").body(Body::empty()).unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+        let req = Request::builder().uri("/api/v1/groups/events?groups=,,").body(Body::empty()).unwrap();
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn multi_events_wake_names_its_group() {
+        use futures_util::StreamExt;
+        let app = build_app(test_state("multiwake"));
+        assert_eq!(register(&app, "g1").await, StatusCode::OK);
+        assert_eq!(register(&app, "g2").await, StatusCode::OK);
+        let req = Request::builder()
+            .uri("/api/v1/groups/events?groups=g1,g2")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut stream = res.into_body().into_data_stream();
+        // A push to g2 must wake the stream naming g2 — and g1 must stay quiet.
+        let res = app
+            .clone()
+            .oneshot(sync_req_to("g2", json!({ "ops": [op_json_for("w1", "g2")], "since": 0 })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut buf = String::new();
+        let deadline = tokio::time::sleep(Duration::from_secs(2));
+        tokio::pin!(deadline);
+        loop {
+            if buf.contains("\"group\":\"g2\"") {
+                break;
+            }
+            tokio::select! {
+                _ = &mut deadline => panic!("no g2 wake within 2s; got: {buf}"),
+                Some(chunk) = stream.next() => buf.push_str(&String::from_utf8_lossy(&chunk.expect("stream ended"))),
+            }
+        }
+        assert!(!buf.contains("\"group\":\"g1\""), "g1 must not be woken by a g2 push");
     }
 
     #[tokio::test]
