@@ -166,7 +166,40 @@ sits in 2 groups cuts per-user RAM nearly in half: at 1c+1GB that is the
 difference between ~4k and ~8k concurrent. No effect on the 1-group
 majority (already 1 stream).
 
+## 8. SSE forwarder micro: one task per connection (2026-10-03)
+
+Two micro-reductions to per-connection state. Semantics are unchanged: a
+wake is a hint, the 20 s poll is the truth.
+
+- **G forwarder tasks became 1.** The multi-group stream spawned one task
+  per group, each forwarding its broadcast receiver into the mpsc. Now a
+  single task multiplexes the G receivers (`select_all` over per-group
+  `unfold` streams) and feeds one mpsc. Saves (G-1) tokio tasks and (G-1)
+  cloned senders per connection: ~0.5 to 1 KB at G=2..5, zero for the
+  1-group majority.
+- **mpsc capacity 256 to 1.** A wake carries no data, so at most one
+  pending wake matters; the rest coalesce.
+
+Implementation notes (pitfalls actually hit): tokio's `broadcast::Receiver`
+neither implements `Stream` nor is `Unpin`, and a `recv()` future dropped
+between polls loses its waker registration, so publishes stop waking it.
+Each group is therefore an `unfold` that passes `(receiver, group name)`
+as state by value: the per-item future stays alive across polls and owns
+everything it uses. The streams are boxed as `Pin<Box<dyn Stream>>`
+because `select_all` requires `Unpin`.
+
+Verified: 16/16 Rust unit tests (including the multi-group wake-names-its-
+group test); live smoke (push to g2 yields `{"group":"g2","seq":1}`,
+g1 silent).
+
+RAM note: the dominant 92.6 KB per user (hyper/axum connection state,
+section 5) is untouched; this trims the per-connection extras.
+
 ## What was deliberately NOT done
+
+- **No jemalloc:** swapping the process allocator is not a pure micro; it
+  wants a full regression pass (unit tests plus the cgroup ceiling run)
+  before it earns its 5 to 15%. Revisit if RSS still binds.
 
 - **No tokio worker tuning:** M:N scheduler, 1 worker per core by default;
   17k sockets on one worker measured fine.
@@ -176,6 +209,8 @@ majority (already 1 stream).
 - **No broker for the wake fan-out:** in-process broadcast is correct for
   one process; a broker belongs to the scale-out story (shard by group,
   fiche 05 ceiling 3).
-- **No per-user RAM reduction yet:** 92.6 KB is dominated by axum/hyper
-  connection state. It is the next lever only if RAM still binds after
-  section 7 (~8k users per GB).
+- **No per-user RAM reduction of the connection state itself:** the 92.6 KB
+  is dominated by axum/hyper state per TCP connection. Section 8 trimmed the
+  per-connection extras; the real lever is one connection per user instead
+  of two (HTTP/2 from the proxy, see the Caddy note in fiche 06), only if
+  RAM still binds after that (~8k users per GB).

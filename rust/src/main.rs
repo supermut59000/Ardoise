@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use db::Db;
+use futures_util::{Stream, StreamExt};
 use pushmod::Config as PushConfig;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -390,31 +391,49 @@ async fn user_events(State(st): State<AppState>, Query(q): Query<MultiGroups>) -
     if known.is_empty() {
         return detail(StatusCode::NOT_FOUND, "Groupe non enregistre");
     }
-    // Fan each group's broadcast channel into one mpsc; the SSE body reads
-    // only that. A forwarder exits when its send errors, i.e. when the client
-    // dropped the stream — so no task outlives the connection.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, u64)>(256);
+    // One forwarder task per connection (not per group): it multiplexes the
+    // G broadcast receivers and pushes wakes into a single mpsc that the SSE
+    // body reads. Capacity 1: a wake carries no data, at most one pending
+    // wake matters, the rest coalesce (the 20 s poll is the truth). The
+    // forwarder exits when its send errors, i.e. when the client dropped the
+    // stream, so no task outlives the connection.
+    let (tx, rx) = tokio::sync::mpsc::channel::<(String, u64)>(1);
+    // Pin<Box<dyn Stream>>: select_all requires Unpin streams, and the
+    // unfold below is not Unpin (the broadcast Receiver is not).
+    let mut streams: Vec<std::pin::Pin<Box<dyn Stream<Item = (String, u64)> + Send>>> =
+        Vec::new();
     for gid in known {
-        let mut wrx = st.events.subscribe(&gid);
-        let gtx = tx.clone();
-        let name = gid.clone();
-        tokio::spawn(async move {
+        let wrx = st.events.subscribe(&gid);
+        // unfold, not poll_fn: the recv() future must stay alive across polls
+        // or the waker registration is lost and publishes no longer wake it.
+        // The receiver is passed by value and handed back as next state.
+        // The (receiver, group name) pair is the unfold state: the closure
+        // captures nothing, so each per-item future owns everything it uses.
+        let s = futures_util::stream::unfold((wrx, gid), |(mut rx, name)| async move {
             loop {
-                match wrx.recv().await {
-                    Ok(seq) => {
-                        if gtx.send((name.clone(), seq)).await.is_err() {
-                            return;
-                        }
-                    }
-                    // Lagged (>64 wakes behind): drop this one wake; the
-                    // client's next wake or 20 s poll re-syncs, same as the
-                    // per-group stream.
+                match rx.recv().await {
+                    Ok(seq) => return Some(((name.clone(), seq), (rx, name))),
+                    // Lagged (>64 wakes behind): drop this one wake and wait
+                    // for the next; the client's next wake or 20 s poll
+                    // re-syncs, same as the per-group stream.
                     Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return,
+                    // Closed: that group's channel went away; end this stream.
+                    // select_all keeps running on the remaining groups, like
+                    // the old per-group forwarders.
+                    Err(broadcast::error::RecvError::Closed) => return None,
                 }
             }
         });
+        streams.push(Box::pin(s));
     }
+    tokio::spawn(async move {
+        let mut sel = futures_util::stream::select_all(streams);
+        while let Some((name, seq)) = sel.next().await {
+            if tx.send((name, seq)).await.is_err() {
+                return;
+            }
+        }
+    });
     let stream = futures_util::stream::unfold(MultiWake { rx, first: true }, |mut w| async move {
         if w.first {
             w.first = false;

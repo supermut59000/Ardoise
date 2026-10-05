@@ -180,6 +180,32 @@ Frontend: `frontend-react/.env.development` points at `localhost:8001`
 (Python alternative is in the comment). Production nginx would need a second
 upstream or a port flip — not wired yet, by design.
 
+Caddy at the cutover (the live Caddyfile lives in the Caddy LXC, not in
+this repo). Route the API directly to the Rust binary over h2c so each user
+holds one backend connection (SSE + sync multiplexed) instead of two;
+statics keep flowing through nginx:3060. Needs Caddy >= 2.7 for the
+`protocol` directive. The Rust binary accepts h2c (axum `http2` feature
+enabled, verified with `curl --http2-prior-knowledge`), so the cutover is
+this Caddyfile block only. Apply only at the cutover: the Python stack is
+h1-only, pointing h2c at it would break it. After deploying, check the backend sees ~1
+established connection per connected user (`ss -tn` on port 8001), not 2.
+
+```caddy
+ardoise.ouiouibaguette.fr {
+    import security_headers
+    request_body {
+        max_size 12MB
+    }
+    handle /api/* {
+        reverse_proxy 192.168.25.25:8001 {
+            protocol h2c
+            flush_interval -1
+        }
+    }
+    reverse_proxy 192.168.25.25:3060
+}
+```
+
 Reproduce the bench: `rust/bench_ab.py` (seeds both DBs, restarts each
 server, writes `/tmp/ab-results.json`; ~3 min).
 

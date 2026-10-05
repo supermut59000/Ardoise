@@ -8,7 +8,8 @@ name = "ardoise"
 path = "src/main.rs"
 
 [dependencies]
-axum = "0.8"
+# http2: accept h2c from the Caddy proxy (one connection per user, fiche 06).
+axum = { version = "0.8", features = ["http2"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal", "sync"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
