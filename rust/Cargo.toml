@@ -14,7 +14,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signa
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tower-http = { version = "0.6", features = ["cors"] }
+# cors + fs: CorsLayer, and ServeDir/ServeFile serving the built frontend
+# (dist/) as the SPA fallback.
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 # default-features=false: `async-await-macro` would drag in futures-macro,
 # absent from the local crates.io mirror. std is all the stream combinators need.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

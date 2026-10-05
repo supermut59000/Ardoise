@@ -171,24 +171,36 @@ spaces (FastAPI) vs compact (serde) — semantically identical.
 ## Running it
 
 ```bash
-cd rust && cargo build --release
-API_KEY="<same as python>" PORT=8001 DATA_FILE=/var/lib/ardoise-rust.db \
-  ./target/release/ardoise
+# 1. build the frontend (dist/ is not in git)
+cd frontend-react && npm ci && npm run build && cd ..
+# 2. build the binary
+cd rust && cargo build --release && cd ..
+# 3. run (from the repo root so the default STATIC_DIR resolves)
+API_KEY="<same as python>" PORT=8001 DATA_FILE=/var/lib/ardoise/ardoise.db \
+  rust/target/release/ardoise
 ```
 
-Frontend: `frontend-react/.env.development` points at `localhost:8001`
-(Python alternative is in the comment). Production nginx would need a second
-upstream or a port flip — not wired yet, by design.
+The binary serves everything: /api/v1, /health, and the built frontend
+(`frontend-react/dist/`, override with `STATIC_DIR`). Any non-file path
+returns index.html with a 200 (SPA fallback, like nginx `try_files`).
+`dist/` missing = statics 404, /api still works. Optional env: `CORS_ORIGINS`,
+`VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`. The docker-compose stack (mariadb,
+backend, frontend) is fully retired by this: the SQLite file replaces
+MariaDB, and the binary replaces nginx for statics. A systemd unit
+(Restart=always) replaces compose's `restart: unless-stopped`.
+
+Frontend dev mode: `frontend-react/.env.development` points at
+`localhost:8001` (Python alternative is in the comment).
 
 Caddy at the cutover (the live Caddyfile lives in the Caddy LXC, not in
-this repo). Route the API directly to the Rust binary over h2c so each user
-holds one backend connection (SSE + sync multiplexed) instead of two;
-statics keep flowing through nginx:3060. Needs Caddy >= 2.7 for the
-`protocol` directive. The Rust binary accepts h2c (axum `http2` feature
-enabled, verified with `curl --http2-prior-knowledge`), so the cutover is
-this Caddyfile block only. Apply only at the cutover: the Python stack is
-h1-only, pointing h2c at it would break it. After deploying, check the backend sees ~1
-established connection per connected user (`ss -tn` on port 8001), not 2.
+this repo). Everything goes to the Rust binary over h2c so each user holds
+one backend connection (SSE + sync + statics multiplexed) instead of two.
+Needs Caddy >= 2.7 for the `protocol` directive. The Rust binary accepts
+h2c (axum `http2` feature enabled, verified with
+curl --http2-prior-knowledge), so the cutover is this Caddyfile block only.
+Apply only at the cutover: the Python stack is h1-only, pointing h2c at it
+would break it. After deploying, check the backend sees ~1 established
+connection per connected user (`ss -tn` on port 8001), not 2.
 
 ```caddy
 ardoise.ouiouibaguette.fr {
@@ -196,13 +208,10 @@ ardoise.ouiouibaguette.fr {
     request_body {
         max_size 12MB
     }
-    handle /api/* {
-        reverse_proxy 192.168.25.25:8001 {
-            protocol h2c
-            flush_interval -1
-        }
+    reverse_proxy 192.168.25.25:8001 {
+        protocol h2c
+        flush_interval -1
     }
-    reverse_proxy 192.168.25.25:3060
 }
 ```
 

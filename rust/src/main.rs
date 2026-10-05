@@ -66,6 +66,7 @@ pub struct Config {
     pub cors_origins: Vec<String>,
     pub port: u16,
     pub data_file: String,
+    pub static_dir: String,
     pub version: String,
 }
 
@@ -90,6 +91,7 @@ fn load_config() -> Config {
         cors_origins: cors.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         port: env("PORT", "8001").parse().unwrap_or(8001),
         data_file: env("DATA_FILE", "ardoise.db").into(),
+        static_dir: env("STATIC_DIR", "frontend-react/dist").into(),
         version: "0.1.0".into(),
     }
 }
@@ -108,10 +110,6 @@ fn detail(status: StatusCode, msg: impl Into<String>) -> Response {
 }
 
 // --- handlers: system ---
-
-async fn root(State(st): State<AppState>) -> Json<Value> {
-    Json(json!({ "message": "Ardoise API", "version": st.cfg.version }))
-}
 
 /// 503 (not a green "unhealthy" 200) so any monitor sees a DB outage as down.
 async fn health(State(st): State<AppState>) -> Response {
@@ -660,9 +658,20 @@ fn build_app(state: AppState) -> Router {
     let api = Router::new().route("/system/ping", get(ping)).merge(authed);
 
     Router::new()
-        .route("/", get(root))
         .route("/health", get(health))
         .nest("/api/v1", api)
+        // SPA fallback: everything else is the built frontend (dist/); a path
+        // that is not a file returns index.html so the client-side router can
+        // take over. Missing dir means statics 404 while /api keeps working.
+        .fallback_service(
+            tower_http::services::ServeDir::new(&cfg.static_dir)
+                // .fallback (not .not_found_service) keeps the 200 status so
+                // the SPA and its service worker treat deep links as normal
+                // pages, like nginx's try_files ... /index.html.
+                .fallback(tower_http::services::ServeFile::new(
+                    std::path::Path::new(&cfg.static_dir).join("index.html"),
+                )),
+        )
         .layer(cors)
         .with_state(state)
 }
@@ -671,12 +680,32 @@ fn build_app(state: AppState) -> Router {
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{Request, StatusCode};
     use tower::ServiceExt; // oneshot: consume a Router without binding a port
+
+    // Deep links (no file on disk) must return the SPA shell with a 200, like
+    // nginx's try_files ... /index.html — a 404 here would break client-side
+    // routing and the service worker's cache.
+    #[tokio::test]
+    async fn spa_fallback_serves_index_html_with_200_for_unknown_paths() {
+        let app = build_app(test_state("spa"));
+        for uri in ["/", "/deep/link/with/segments"] {
+            let res = app.clone().oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "uri={uri}");
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(&body[..], b"<html>shell</html>", "uri={uri}");
+        }
+    }
 
     fn test_state(tag: &str) -> AppState {
         let p = format!("/tmp/ardoise-maintest-{}-{}.db", std::process::id(), tag);
         let _ = std::fs::remove_file(&p);
+        // Fake frontend dist so the SPA fallback is exercisable (see the
+        // spa_fallback test).
+        let static_dir = format!("/tmp/ardoise-maintest-{}-{}-static", std::process::id(), tag);
+        std::fs::create_dir_all(&static_dir).unwrap();
+        std::fs::write(format!("{static_dir}/index.html"), "<html>shell</html>").unwrap();
         AppState {
             db: db::open(&p).unwrap(),
             cfg: Arc::new(Config {
@@ -686,6 +715,7 @@ mod tests {
                 cors_origins: vec![],
                 port: 0,
                 data_file: p,
+                static_dir,
                 version: "t".into(),
             }),
             push_cfg: Arc::new(PushConfig {
