@@ -595,7 +595,18 @@ async fn main() {
         .await.expect("failed to bind");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            // SIGTERM too: systemctl stop sends TERM, and only a graceful
+            // shutdown lets the SQLite connection close cleanly, which is
+            // what checkpoints the WAL into the main .db file.
+            let ctrl_c = tokio::signal::ctrl_c();
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )
+            .expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => {},
+                _ = sigterm.recv() => {},
+            }
             println!("shutting down");
         })
         .await
