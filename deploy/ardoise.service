@@ -1,0 +1,33 @@
+# Ardoise systemd unit — TEMPLATE (secrets placeholder).
+#
+# Live unit: /etc/systemd/system/ardoise.service on the server, with the real
+# API_KEY / VAPID values. Never commit the live one (secrets).
+#
+# Install: copy to /etc/systemd/system/ardoise.service, fill the <...> values,
+# then:  sudo systemctl daemon-reload && sudo systemctl enable --now ardoise
+#
+# DATA_FILE's parent dir must exist (the binary does not create it):
+#   mkdir -p /home/mathis/ardoise-data
+#
+# STATIC_DIR is left at its default (frontend-react/dist, resolved against
+# WorkingDirectory = repo root), which is where deploy.sh builds the frontend.
+
+[Unit]
+Description=Ardoise (Rust)
+After=network-online.target
+
+[Service]
+User=mathis
+WorkingDirectory=/home/mathis/Ardoise
+Environment=API_KEY=<API_KEY>
+Environment=PORT=8001
+Environment=DATA_FILE=/home/mathis/ardoise-data/ardoise.db
+# Push (VAPID): empty key = push disabled, endpoints answer 503, sync works.
+Environment=VAPID_PRIVATE_KEY=<VAPID_PRIVATE_KEY>
+Environment=VAPID_SUBJECT=<mailto:you@example.com>
+ExecStart=/home/mathis/Ardoise/rust/target/release/ardoise
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

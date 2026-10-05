@@ -187,7 +187,9 @@ returns index.html with a 200 (SPA fallback, like nginx `try_files`).
 `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`. The docker-compose stack (mariadb,
 backend, frontend) is fully retired by this: the SQLite file replaces
 MariaDB, and the binary replaces nginx for statics. A systemd unit
-(Restart=always) replaces compose's `restart: unless-stopped`.
+(Restart=always) replaces compose's `restart: unless-stopped`; the template
+is `deploy/ardoise.service` (secrets placeholder), the live unit with real
+keys lives at /etc/systemd/system/ardoise.service on the server, off git.
 
 Frontend dev mode: `frontend-react/.env.development` points at
 `localhost:8001` (Python alternative is in the comment).
